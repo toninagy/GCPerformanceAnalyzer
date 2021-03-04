@@ -16,7 +16,7 @@ public class Main {
     private static final int BUFFER_SIZE = 8 * 1024;
 
     public static final int INITIAL_HEAP_SIZE_DEFAULT = 8;
-    public static final int MAX_HEAP_SIZE_DEFAULT = 8;
+    public static final int MAX_HEAP_SIZE_DEFAULT = 64;
 
     private static int OUT_FILE_NO;
 
@@ -28,7 +28,10 @@ public class Main {
     public static void main(String[] args) {
         try {
             launch();
-        } catch (IOException | InterruptedException ex) {
+        } catch (IOException ex) {
+            ex.printStackTrace();
+        } catch (InterruptedException ex) {
+            System.out.println("Process got interrupted");
             ex.printStackTrace();
         }
     }
@@ -70,6 +73,12 @@ public class Main {
      * @return CLI
      */
     private static CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
+        if(startHeapSize < 4) {
+            throw new IllegalArgumentException("Invalid argument for initial heap size!");
+        }
+        if(maxHeapSize < 16) {
+            throw new IllegalArgumentException("Invalid argument for maximum heap size!");
+        }
         CLI.VMOptions.Xms.setSize(startHeapSize);
         CLI.VMOptions.Xmx.setSize(maxHeapSize);
         CLI cli = new CLI(gcType);
