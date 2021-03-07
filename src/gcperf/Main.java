@@ -5,25 +5,26 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.text.DecimalFormat;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class Main {
-    private static final int BUFFER_SIZE = 8 * 1024;
-
-    public static final int INITIAL_HEAP_SIZE_DEFAULT = 8;
+    public static final int INITIAL_HEAP_SIZE_DEFAULT = 4;
+    public static final int INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH = 40;
     public static final int MAX_HEAP_SIZE_DEFAULT = 64;
-
-    private static int OUT_FILE_NO;
-
+    public static final int MAX_HEAP_SIZE_DEFAULT_SHENANDOAH = 200;
+    private static final int BUFFER_SIZE = 8 * 1024;
     private static final Pattern gcCpuPattern = Pattern.compile("gc,cpu");
     private static final Pattern gcPhasesPattern = Pattern.compile("gc,phases");
     private static final Pattern gcWhiteSpacePattern = Pattern.compile("gc\\s");
     private static final Pattern gcNumPattern = Pattern.compile("GC\\([0-9]+\\)");
+    private static final Object mainLock = new Object();
+    private static final Object watcherLock = new Object();
+    private static int OUT_FILE_NO;
 
     public static void main(String[] args) {
         try {
@@ -37,33 +38,127 @@ public class Main {
     }
 
     private static void launch() throws IOException, InterruptedException {
-        double[] avgRuns = new double[5];
-        int i = 0;
-        for (GCType gcType : GCType.values()) {
-            avgRuns[i++] = performGCAnalysis(gcType);
-        }
-        for (double d : avgRuns) {
-            System.out.println("---");
-            System.out.println(d);
-            System.out.println("---");
-        }
+        GCType suggestedGC = performGCAnalysis("App", 2, 125, 500);
+        System.out.println(suggestedGC.name());
     }
 
-    private static double performGCAnalysis(GCType gcType) throws IOException, InterruptedException {
-        double totalTime = 0.0;
-        System.out.println(gcType.name());
-        for(int i=0; i<8; i++) {
-            ProcessBuilder builder = new ProcessBuilder(buildExecutableCommandArray(buildCLI(gcType, INITIAL_HEAP_SIZE_DEFAULT+(i*125),
-                    MAX_HEAP_SIZE_DEFAULT+(i*500)), "App"));
-            File outFile = new File("out" + ++OUT_FILE_NO + ".txt");
-            builder.redirectOutput(outFile);
-            builder.redirectError(new File("outErr" + OUT_FILE_NO + ".txt"));
-            builder.start().waitFor();
-            double time = yieldGCTimeFromSource(yieldOutputStringsFromFile(outFile), gcType);
-            System.out.println(i + ":" + time);
-            totalTime += time;
+    private static GCType performGCAnalysis(String appName, int runs, int initHeapIncrementSize, int maxHeapIncrementSize) throws IOException, InterruptedException {
+        Map<GCType, Double> avgRuns = new HashMap<>();
+        for (GCType gcType : GCType.values()) {
+            double totalTime = 0.0;
+            int erroneousRuns = 0;
+            int noOfRuns = runs;
+            System.out.println(gcType.name());
+            for (int i = 0; i < noOfRuns; i++) {
+                int xms, xmx;
+                if (gcType == GCType.SHENANDOAH) {
+                    xms = Integer.min(INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH + (i * initHeapIncrementSize), 2048);
+                    xmx = Integer.min(MAX_HEAP_SIZE_DEFAULT_SHENANDOAH + (i * initHeapIncrementSize), 8192);
+                } else {
+                    xms = Integer.min(INITIAL_HEAP_SIZE_DEFAULT + (i * initHeapIncrementSize), 2048);
+                    xmx = Integer.min(MAX_HEAP_SIZE_DEFAULT + (i * maxHeapIncrementSize), 8192);
+                }
+                if (xms == 2048 && xmx == 8192) {
+                    i = noOfRuns;
+                    //TODO Log jump in incrementation
+                }
+                if (xms == 2048) {
+                    //TODO Log max initial heap size reached
+                }
+                if (xmx == 8192) {
+                    //TODO Log max heap size reached
+                }
+                ProcessBuilder builder = new ProcessBuilder(buildExecutableCommandArray(buildCLI(gcType, xms,
+                        xmx), appName));
+                File outFile = new File("out" + ++OUT_FILE_NO + ".txt");
+                builder.redirectOutput(outFile);
+                File outErrFile = new File("outErr" + OUT_FILE_NO + ".txt");
+                builder.redirectError(outErrFile);
+                final AtomicReference<Process> process = new AtomicReference<>();
+                final AtomicBoolean processSuspended = new AtomicBoolean();
+                boolean erroneousRun = false, outOfMemoryError = false;
+                Thread processThread = new Thread(() -> {
+                    try {
+                        process.set(builder.start());
+                        synchronized (watcherLock) {
+                            watcherLock.notify();
+                        }
+                        process.get().waitFor();
+                        synchronized (mainLock) {
+                            mainLock.notify();
+                        }
+                    } catch (IOException | InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                });
+                processThread.start();
+                if (gcType == GCType.SHENANDOAH) {
+                    Thread watcherThread = new Thread(() -> {
+                        try {
+                            synchronized (watcherLock) {
+                                watcherLock.wait();
+                            }
+                            Process processOnStart = process.get();
+                            double g1TimeAvg = avgRuns.get(GCType.G1);
+                            Thread.sleep((long) (3 * 1000 * g1TimeAvg));
+                            if (process.get().pid() == processOnStart.pid() && processThread.isAlive()) {
+                                processOnStart.destroy();
+                                processThread.interrupt();
+                                synchronized (mainLock) {
+                                    processSuspended.set(true);
+                                    mainLock.notify();
+                                }
+                            }
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    });
+                    watcherThread.start();
+                }
+                synchronized (mainLock) {
+                    mainLock.wait();
+                }
+                if (processSuspended.get()) {
+                    erroneousRun = true;
+                    noOfRuns++;
+                    erroneousRuns++;
+                }
+                else if (process.get().exitValue() != 0) {
+                    erroneousRun = true;
+                    //TODO Log something went wrong
+                    try (Scanner scanner = new Scanner(outErrFile)) {
+                        if (scanner.hasNext()) {
+                            while (scanner.hasNext()) {
+                                String line = scanner.nextLine();
+                                if (line.contains("OutOfMemoryError")) {
+                                    outOfMemoryError = true;
+                                    //TODO Log OutOfMemoryError
+                                }
+                            }
+                        }
+                    }
+                    if (!outOfMemoryError) {
+                        throw new IllegalStateException("Error occurred during application run.");
+                    }
+                    else {
+                        noOfRuns++;
+                        erroneousRuns++;
+                    }
+                }
+                double time = 0.0;
+                if (!erroneousRun) {
+                    time = yieldGCTimeFromSource(yieldOutputStringsFromFile(outFile), gcType);
+                    totalTime += time;
+                }
+                System.out.println(i + ":" + time);
+            }
+            avgRuns.put(gcType, totalTime / (noOfRuns - erroneousRuns));
         }
-        return totalTime / 8;
+        var resultEntry = avgRuns.entrySet().stream().min(Map.Entry.comparingByValue());
+        if (resultEntry.isEmpty()) {
+            throw new IllegalStateException("Result GC Type not available.");
+        }
+        return resultEntry.get().getKey();
     }
 
     /***
@@ -73,16 +168,16 @@ public class Main {
      * @return CLI
      */
     private static CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
-        if(startHeapSize < 4) {
+        if (startHeapSize < 1) {
             throw new IllegalArgumentException("Invalid argument for initial heap size!");
         }
-        if(maxHeapSize < 16) {
+        if (maxHeapSize < 16) {
             throw new IllegalArgumentException("Invalid argument for maximum heap size!");
         }
         CLI.VMOptions.Xms.setSize(startHeapSize);
         CLI.VMOptions.Xmx.setSize(maxHeapSize);
         CLI cli = new CLI(gcType);
-        switch(gcType) {
+        switch (gcType) {
             case SERIAL, PARALLEL -> cli.withVMOptions(CLI.VMOptions.Xms, CLI.VMOptions.Xmx)
                     .withGCOptions(CLI.VMOptions.GCOptions.VerboseGC)
                     .withXlogOptions(CLI.VMOptions.XlogOptions.GCStart, CLI.VMOptions.XlogOptions.GCHeap,
@@ -106,9 +201,9 @@ public class Main {
                             CLI.VMOptions.XlogOptions.GCReloc, CLI.VMOptions.XlogOptions.GCNMethod, CLI.VMOptions.XlogOptions.GCRef);
 
             case SHENANDOAH -> cli.withVMOptions(CLI.VMOptions.Xms, CLI.VMOptions.Xmx)
-                     .withGCOptions(CLI.VMOptions.GCOptions.VerboseGC, CLI.VMOptions.GCOptions.UnlockExperimental)
-                     .withXlogOptions(CLI.VMOptions.XlogOptions.GC, CLI.VMOptions.XlogOptions.GCInit, CLI.VMOptions.XlogOptions.GCStats,
-                             CLI.VMOptions.XlogOptions.GCHeapExit, CLI.VMOptions.XlogOptions.GCMetaspace, CLI.VMOptions.XlogOptions.GCErgo);
+                    .withGCOptions(CLI.VMOptions.GCOptions.VerboseGC, CLI.VMOptions.GCOptions.UnlockExperimental)
+                    .withXlogOptions(CLI.VMOptions.XlogOptions.GC, CLI.VMOptions.XlogOptions.GCInit, CLI.VMOptions.XlogOptions.GCStats,
+                            CLI.VMOptions.XlogOptions.GCHeapExit, CLI.VMOptions.XlogOptions.GCMetaspace, CLI.VMOptions.XlogOptions.GCErgo);
         }
         return cli;
     }
@@ -135,12 +230,12 @@ public class Main {
 
     private static List<String> yieldOutputStringsFromFile(File file) {
         List<String> outputStrings = new ArrayList<>();
-        try(BufferedReader bufferedReader = new BufferedReader(new FileReader(file), BUFFER_SIZE)) {
+        try (BufferedReader bufferedReader = new BufferedReader(new FileReader(file), BUFFER_SIZE)) {
             String line;
-            while((line = bufferedReader.readLine()) != null) {
+            while ((line = bufferedReader.readLine()) != null) {
                 outputStrings.add(line);
             }
-        } catch(IOException ioe) {
+        } catch (IOException ioe) {
             System.out.println("File " + file.getName());
             ioe.printStackTrace();
         }
