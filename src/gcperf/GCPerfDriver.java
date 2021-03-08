@@ -1,54 +1,95 @@
 package gcperf;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.IOException;
+import java.io.*;
 import java.text.DecimalFormat;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class Main {
+public class GCPerfDriver {
     public static final int INITIAL_HEAP_SIZE_DEFAULT = 4;
     public static final int INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH = 40;
     public static final int MAX_HEAP_SIZE_DEFAULT = 64;
     public static final int MAX_HEAP_SIZE_DEFAULT_SHENANDOAH = 200;
+    private static final Logger LOGGER = Logger.getLogger(GCPerfDriver.class.getSimpleName());
     private static final int BUFFER_SIZE = 8 * 1024;
+
     private static final Pattern gcCpuPattern = Pattern.compile("gc,cpu");
     private static final Pattern gcPhasesPattern = Pattern.compile("gc,phases");
     private static final Pattern gcWhiteSpacePattern = Pattern.compile("gc\\s");
     private static final Pattern gcNumPattern = Pattern.compile("GC\\([0-9]+\\)");
+
     private static final Object mainLock = new Object();
     private static final Object watcherLock = new Object();
+
     private static int OUT_FILE_NO;
 
     public static void main(String[] args) {
         try {
             launch();
         } catch (IOException ex) {
-            ex.printStackTrace();
-        } catch (InterruptedException ex) {
-            System.out.println("Process got interrupted");
+            LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
         }
     }
 
-    private static void launch() throws IOException, InterruptedException {
-        GCType suggestedGC = performGCAnalysis("App", 2, 125, 500);
-        System.out.println(suggestedGC.name());
+    private static void launch() throws IOException {
+        Map<GCType, List<Double>> gcTimeMeasurements = performGCAnalysis("App", 2, 125, 500);
+        createCSVFile(gcTimeMeasurements, "results.csv");
+        Map<GCType, Double> avgRuns = calculateAvgRuns(gcTimeMeasurements);
+        GCType suggestedGCType = selectSuggestedGC(avgRuns);
+        LOGGER.log(Level.INFO, "Suggested GC Type: " + suggestedGCType.name());
     }
 
-    private static GCType performGCAnalysis(String appName, int runs, int initHeapIncrementSize, int maxHeapIncrementSize) throws IOException, InterruptedException {
+    private static Map<GCType, Double> calculateAvgRuns(Map<GCType, List<Double>> performanceMap) {
         Map<GCType, Double> avgRuns = new HashMap<>();
         for (GCType gcType : GCType.values()) {
+            List<Double> performanceTimes = performanceMap.get(gcType);
+            double aggregatedTimes = performanceTimes.stream().reduce(Double::sum).orElse(0.0);
+            avgRuns.put(gcType, aggregatedTimes / performanceTimes.size());
+        }
+        return avgRuns;
+    }
+
+    private static GCType selectSuggestedGC(Map<GCType, Double> avgRuns) {
+        var resultEntry = avgRuns.entrySet().stream().min(Map.Entry.comparingByValue());
+        if (resultEntry.isEmpty()) {
+            throw new IllegalStateException("Result GC Type not available.");
+        }
+        return resultEntry.get().getKey();
+    }
+
+    private static void createCSVFile(Map<GCType, List<Double>> gcTimeMeasurements, String fileName) {
+        /* >>gcType<<,>>run no.<<,>>time<< */
+        try (BufferedWriter bufferedWriter = new BufferedWriter(new FileWriter(fileName))) {
+            for (GCType gcType : GCType.values()) {
+                List<Double> runs = gcTimeMeasurements.get(gcType);
+                StringBuilder stringBuilder = new StringBuilder();
+                for (int i = 0; i < runs.size(); i++) {
+                    stringBuilder.append(gcType.name()).append(",").append(i + 1).append(",").append(runs.get(i)).append("\n");
+                }
+                bufferedWriter.write(stringBuilder.toString());
+            }
+        } catch (IOException ex) {
+            LOGGER.log(Level.SEVERE, "IO exception occurred");
+            ex.printStackTrace();
+        }
+    }
+
+    private static Map<GCType, List<Double>> performGCAnalysis(String appName, int runs, int initHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
+        Map<GCType, List<Double>> performanceMap = new HashMap<>();
+        Map<GCType, Double> avgRuns = new HashMap<>();
+        for (GCType gcType : GCType.values()) {
+            List<Double> measuredTimes = new ArrayList<>();
             double totalTime = 0.0;
-            int erroneousRuns = 0;
             int noOfRuns = runs;
-            System.out.println(gcType.name());
+            LOGGER.log(Level.INFO, "Initializing run with GC Type: " + gcType.name());
+            LOGGER.log(Level.INFO, "Expected no. of runs: " + runs);
             for (int i = 0; i < noOfRuns; i++) {
                 int xms, xmx;
                 if (gcType == GCType.SHENANDOAH) {
@@ -60,13 +101,14 @@ public class Main {
                 }
                 if (xms == 2048 && xmx == 8192) {
                     i = noOfRuns;
-                    //TODO Log jump in incrementation
+                    LOGGER.log(Level.WARNING, "Maximum initial heap size (Xms) and maximum heap size (Xmx) reached," +
+                            "initializing last run");
                 }
                 if (xms == 2048) {
-                    //TODO Log max initial heap size reached
+                    LOGGER.log(Level.WARNING, "Maximum initial heap size (Xms) reached");
                 }
                 if (xmx == 8192) {
-                    //TODO Log max heap size reached
+                    LOGGER.log(Level.WARNING, "Maximum heap size (Xmx) reached");
                 }
                 ProcessBuilder builder = new ProcessBuilder(buildExecutableCommandArray(buildCLI(gcType, xms,
                         xmx), appName));
@@ -76,7 +118,8 @@ public class Main {
                 builder.redirectError(outErrFile);
                 final AtomicReference<Process> process = new AtomicReference<>();
                 final AtomicBoolean processSuspended = new AtomicBoolean();
-                boolean erroneousRun = false, outOfMemoryError = false;
+                boolean erroneousRun = false;
+                boolean outOfMemoryError = false;
                 Thread processThread = new Thread(() -> {
                     try {
                         process.set(builder.start());
@@ -87,78 +130,84 @@ public class Main {
                         synchronized (mainLock) {
                             mainLock.notify();
                         }
-                    } catch (IOException | InterruptedException e) {
-                        e.printStackTrace();
+                    } catch (IOException ex) {
+                        LOGGER.log(Level.SEVERE, "IO exception occurred");
+                        ex.printStackTrace();
+                    } catch (InterruptedException ex) {
+                        LOGGER.log(Level.WARNING, "Java runtime process " + process.get().pid() + " timed out/interrupted");
                     }
                 });
                 processThread.start();
                 if (gcType == GCType.SHENANDOAH) {
+                    LOGGER.log(Level.FINE, "Detected Shenandoah GC Type, initializing timeout watcher thread");
                     Thread watcherThread = new Thread(() -> {
                         try {
                             synchronized (watcherLock) {
                                 watcherLock.wait();
                             }
                             Process processOnStart = process.get();
-                            double g1TimeAvg = avgRuns.get(GCType.G1);
-                            Thread.sleep((long) (3 * 1000 * g1TimeAvg));
+                            double zgcAndG1Avgs = (avgRuns.get(GCType.ZGC) + avgRuns.get(GCType.G1)) / 2;
+                            double shenandoahWaitThresholdInMs = 5 * zgcAndG1Avgs;
+                            Thread.sleep((long) (shenandoahWaitThresholdInMs * 1000));
                             if (process.get().pid() == processOnStart.pid() && processThread.isAlive()) {
                                 processOnStart.destroy();
                                 processThread.interrupt();
                                 synchronized (mainLock) {
                                     processSuspended.set(true);
+                                    LOGGER.log(Level.WARNING, "Shenandoah GC process suspended");
                                     mainLock.notify();
                                 }
                             }
-                        } catch (InterruptedException e) {
-                            e.printStackTrace();
+                        } catch (InterruptedException ex) {
+                            LOGGER.log(Level.SEVERE, Thread.currentThread().getName() + " interrupted");
+                            ex.printStackTrace();
                         }
                     });
                     watcherThread.start();
                 }
                 synchronized (mainLock) {
-                    mainLock.wait();
+                    try {
+                        mainLock.wait();
+                    } catch (InterruptedException ex) {
+                        LOGGER.log(Level.SEVERE, Thread.currentThread().getName() + " interrupted");
+                        ex.printStackTrace();
+                    }
                 }
                 if (processSuspended.get()) {
                     erroneousRun = true;
                     noOfRuns++;
-                    erroneousRuns++;
-                }
-                else if (process.get().exitValue() != 0) {
+                } else if (process.get().exitValue() != 0) {
                     erroneousRun = true;
-                    //TODO Log something went wrong
+                    LOGGER.log(Level.WARNING, "Process ended abnormally, exit code: " + process.get().exitValue());
                     try (Scanner scanner = new Scanner(outErrFile)) {
                         if (scanner.hasNext()) {
                             while (scanner.hasNext()) {
                                 String line = scanner.nextLine();
                                 if (line.contains("OutOfMemoryError")) {
                                     outOfMemoryError = true;
-                                    //TODO Log OutOfMemoryError
                                 }
                             }
                         }
                     }
                     if (!outOfMemoryError) {
-                        throw new IllegalStateException("Error occurred during application run.");
+                        LOGGER.log(Level.SEVERE, "Unknown error occurred, ending analysis");
+                        throw new IllegalStateException("Unknown error occurred during application run. " +
+                                "Please verify the integrity of the .class file.");
                     }
-                    else {
-                        noOfRuns++;
-                        erroneousRuns++;
-                    }
+                    noOfRuns++;
                 }
                 double time = 0.0;
                 if (!erroneousRun) {
                     time = yieldGCTimeFromSource(yieldOutputStringsFromFile(outFile), gcType);
+                    measuredTimes.add(time);
                     totalTime += time;
                 }
-                System.out.println(i + ":" + time);
+                LOGGER.log(Level.INFO, "Run no.: " + i + " : time: " + time);
             }
-            avgRuns.put(gcType, totalTime / (noOfRuns - erroneousRuns));
+            avgRuns.put(gcType, totalTime / runs);
+            performanceMap.put(gcType, measuredTimes);
         }
-        var resultEntry = avgRuns.entrySet().stream().min(Map.Entry.comparingByValue());
-        if (resultEntry.isEmpty()) {
-            throw new IllegalStateException("Result GC Type not available.");
-        }
-        return resultEntry.get().getKey();
+        return performanceMap;
     }
 
     /***
@@ -235,9 +284,9 @@ public class Main {
             while ((line = bufferedReader.readLine()) != null) {
                 outputStrings.add(line);
             }
-        } catch (IOException ioe) {
-            System.out.println("File " + file.getName());
-            ioe.printStackTrace();
+        } catch (IOException ex) {
+            LOGGER.log(Level.SEVERE, "IO exception occurred with file " + file.getName());
+            ex.printStackTrace();
         }
         return outputStrings;
     }
