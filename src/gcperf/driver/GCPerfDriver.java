@@ -1,4 +1,9 @@
-package gcperf;
+package gcperf.driver;
+
+import com.github.sh0nk.matplotlib4j.PythonExecutionException;
+import gcperf.CLI;
+import gcperf.GCType;
+import gcperf.plot.GCPerfPlot;
 
 import java.io.*;
 import java.text.DecimalFormat;
@@ -35,15 +40,28 @@ public class GCPerfDriver {
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
+        } catch (PythonExecutionException ex) {
+            LOGGER.log(Level.SEVERE, "Python execution error occurred");
+            ex.printStackTrace();
         }
     }
 
-    private static void launch() throws IOException {
+    private static void launch() throws IOException, PythonExecutionException {
         Map<GCType, List<Double>> gcTimeMeasurements = performGCAnalysis("App", 2, 125, 500);
-        createCSVFile(gcTimeMeasurements, "results.csv");
+        plotResults(gcTimeMeasurements);
         Map<GCType, Double> avgRuns = calculateAvgRuns(gcTimeMeasurements);
         GCType suggestedGCType = selectSuggestedGC(avgRuns);
+        createCSVFile(gcTimeMeasurements, "results.csv");
         LOGGER.log(Level.INFO, "Suggested GC Type: " + suggestedGCType.name());
+    }
+
+    private static void plotResults(Map<GCType, List<Double>> measurements) throws IOException, PythonExecutionException {
+        GCPerfPlot gcPerfPlot = new GCPerfPlot(GCType.SERIAL, new ArrayList<>());
+        for(Map.Entry<GCType, List<Double>> entry : measurements.entrySet()) {
+            gcPerfPlot.setGcType(entry.getKey());
+            gcPerfPlot.setMeasurements(entry.getValue());
+            gcPerfPlot.plotMeasurements();
+        }
     }
 
     private static Map<GCType, Double> calculateAvgRuns(Map<GCType, List<Double>> performanceMap) {
