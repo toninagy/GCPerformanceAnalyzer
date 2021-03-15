@@ -1,4 +1,4 @@
-package gcperf;
+package hu.antalnagy.gcperf;
 
 public enum GCType {
     SERIAL("-XX:+UseSerialGC"),

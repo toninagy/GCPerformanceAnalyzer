@@ -1,9 +1,9 @@
-package gcperf.plot;
+package hu.antalnagy.gcperf.plot;
 
 import com.github.sh0nk.matplotlib4j.Plot;
 import com.github.sh0nk.matplotlib4j.PythonExecutionException;
 import com.github.sh0nk.matplotlib4j.builder.HistBuilder;
-import gcperf.GCType;
+import hu.antalnagy.gcperf.GCType;
 
 import java.io.IOException;
 import java.util.ArrayList;

@@ -1,15 +1,15 @@
-package gcperf;
+package hu.antalnagy.gcperf;
 
 import java.util.Arrays;
 
 public class CLI {
 
-    private gcperf.GCType gcType;
+    private GCType gcType;
     private VMOptions[] vmOptions;
     private VMOptions.GCOptions[] gcOptions;
     private VMOptions.XlogOptions[] xlogOptions;
 
-    public CLI(gcperf.GCType gcType) {
+    public CLI(GCType gcType) {
         this.gcType = gcType;
     }
 
@@ -28,7 +28,7 @@ public class CLI {
         return this;
     }
 
-    public gcperf.GCType getGcType() {
+    public GCType getGcType() {
         return gcType;
     }
 
