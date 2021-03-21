@@ -6,6 +6,8 @@ import hu.antalnagy.gcperf.GCType;
 import hu.antalnagy.gcperf.plot.GCPerfPlot;
 
 import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.DecimalFormat;
 import java.util.*;
@@ -22,6 +24,7 @@ public class GCPerfDriver {
     public static final int INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH = 40;
     public static final int MAX_HEAP_SIZE_DEFAULT = 64;
     public static final int MAX_HEAP_SIZE_DEFAULT_SHENANDOAH = 200;
+    private static final Path LOC_PATH = Paths.get("").toAbsolutePath();
     private static final Logger LOGGER = Logger.getLogger(GCPerfDriver.class.getSimpleName());
     private static final int BUFFER_SIZE = 8 * 1024;
 
@@ -34,35 +37,40 @@ public class GCPerfDriver {
     private static final Object watcherLock = new Object();
 
     private static int OUT_FILE_NO;
+    private static String mainClass = null;
 
     private static List<GCType> gcTypes = null;
     private static boolean isShenandoahOnly = false;
     private static int prematureProcessInterrupts = 0;
+    private static double lastGoodShenandoahRun = 0;
 
     public static void main(String[] args) {
         try {
             var list = new ArrayList<GCType>();
 //            list.add(GCType.G1);
-//            list.add(GCType.ZGC);
+            list.add(GCType.ZGC);
             list.add(GCType.SHENANDOAH);
 //            launch("App", 2, 64, 256, list);
-            launch(new File("App"), 2, 64, 256, list);
+            launch(new File("mass-deploy.jar"), 2, 64, 256, list);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
         } catch (PythonExecutionException ex) {
             LOGGER.log(Level.SEVERE, "Python execution error occurred");
             ex.printStackTrace();
+        } catch (InterruptedException ex) {
+            LOGGER.log(Level.SEVERE, "Interrupted thread");
+            ex.printStackTrace();
         }
     }
 
     public static void launch(File app, int numOfRuns, int initHeapIncrementSize,
-                              int maxHeapIncrementSize, List<GCType> gcTypes) throws IOException, PythonExecutionException {
+                              int maxHeapIncrementSize, List<GCType> gcTypes) throws IOException, PythonExecutionException,
+                                                                                InterruptedException {
         GCPerfDriver.gcTypes = new ArrayList<>(gcTypes);
         isShenandoahOnly = GCPerfDriver.gcTypes.contains(GCType.SHENANDOAH) && GCPerfDriver.gcTypes.size() == 1;
-        createCopyOfBytecodeLocally(app);
-        String appName = app.getName().substring(0, app.getName().length() - 6);
-        Map<GCType, List<Double>> gcTimeMeasurements = performGCAnalysis(appName, numOfRuns, initHeapIncrementSize,
+        extractBinariesAndSetMainClass(app);
+        Map<GCType, List<Double>> gcTimeMeasurements = performGCAnalysis(numOfRuns, initHeapIncrementSize,
                 maxHeapIncrementSize);
         plotResults(gcTimeMeasurements);
         Map<GCType, Double> avgRuns = calculateAvgRuns(gcTimeMeasurements);
@@ -71,16 +79,102 @@ public class GCPerfDriver {
         LOGGER.log(Level.INFO, "Suggested GC Type: " + suggestedGCType.name());
     }
 
-    private static void createCopyOfBytecodeLocally(File file) throws IOException {
-        File copy = new File(Paths.get("").toAbsolutePath().toString() + "\\" + file.getName());
+    private static void extractBinariesAndSetMainClass(File file) throws IOException, InterruptedException {
+        String fileName = file.getName();
+        final Path targetDirPath = Paths.get(LOC_PATH.toString() + "/bin");
+
+        createBinDirectoryAndCopyFile(targetDirPath, file);
+
+        if(fileName.endsWith(".class")) {
+            mainClass = fileName.substring(0, fileName.length() - 6);
+        }
+        else if (fileName.endsWith(".jar")) {
+            ProcessBuilder processBuilder = new ProcessBuilder("jar", "xf", fileName);
+            processBuilder.directory(targetDirPath.toFile());
+            Process process = processBuilder.start();
+            process.waitFor();
+            File[] files = Paths.get(targetDirPath + "/META-INF").toFile().listFiles();
+            if(files == null) {
+                LOGGER.log(Level.SEVERE, "Empty binaries directory");
+                throw new IllegalArgumentException("Empty binaries directory");
+            }
+            Optional<File> manifest = Arrays.stream(files).filter(f -> f.getName().contains("MANIFEST.MF")).findFirst();
+            if(manifest.isEmpty()) {
+                LOGGER.log(Level.SEVERE, "MANIFEST.MF file missing");
+                throw new IllegalArgumentException("MANIFEST.MF file couldn't be found. Please check .jar file" +
+                        "contents");
+            }
+            try (Scanner scanner = new Scanner(manifest.get())) {
+                while (scanner.hasNext()) {
+                    String line = scanner.nextLine();
+                    if (line.contains("Main-Class:")) {
+                        var split = line.split(" ");
+                        mainClass = split[1];
+                        break;
+                    }
+                }
+                if (mainClass == null) {
+                    LOGGER.log(Level.SEVERE, "Incorrect MANIFEST.MF file provided");
+                    throw new IllegalArgumentException("Incorrect MANIFEST.MF file provided. Please check .jar file" +
+                            "contents");
+                }
+            }
+        }
+        else {
+            LOGGER.log(Level.SEVERE, "File format not supported");
+            throw new IllegalArgumentException("File format not supported. Please provide either a .class file or a .jar file");
+        }
+    }
+
+    private static void createBinDirectoryAndCopyFile(Path targetDirPath, File file) throws IOException {
+        if(Files.exists(targetDirPath)) {
+            if(!deleteFilesInDirectory(targetDirPath.toFile())) {
+                LOGGER.log(Level.SEVERE, "Couldn't delete files in binaries directory");
+                throw new IOException("Couldn't delete files in binaries directory. " +
+                        "Possible permission denial.");
+            }
+        }
+        Files.createDirectory(targetDirPath);
+        copyFileToDir(targetDirPath, file);
+    }
+
+    private static boolean deleteFilesInDirectory(File directory) {
+        File[] content = directory.listFiles();
+        if (content != null) {
+            for (File file : content) {
+                deleteFilesInDirectory(file);
+            }
+        }
+        return directory.delete();
+    }
+
+    private static void copyFileToDir(Path path, File file) throws IOException {
+        File copy = new File(path.toString() + "/" + file.getName());
         try (InputStream in = new BufferedInputStream(new FileInputStream(file));
-                OutputStream out = new BufferedOutputStream(new FileOutputStream(copy))) {
+             OutputStream out = new BufferedOutputStream(new FileOutputStream(copy))) {
             byte[] buffer = new byte[1024];
             int lengthRead;
             while ((lengthRead = in.read(buffer)) > 0) {
                 out.write(buffer, 0, lengthRead);
                 out.flush();
             }
+        }
+    }
+
+    private static void createCSVFile(Map<GCType, List<Double>> gcTimeMeasurements, String fileName) {
+        /* >>gcType<<,>>run no.<<,>>time<< */
+        try (BufferedWriter bufferedWriter = new BufferedWriter(new FileWriter(fileName))) {
+            for (GCType gcType : GCPerfDriver.gcTypes) {
+                List<Double> runs = gcTimeMeasurements.get(gcType);
+                StringBuilder stringBuilder = new StringBuilder();
+                for (int i = 0; i < runs.size(); i++) {
+                    stringBuilder.append(gcType.name()).append(",").append(i + 1).append(",").append(runs.get(i)).append("\n");
+                }
+                bufferedWriter.write(stringBuilder.toString());
+            }
+        } catch (IOException ex) {
+            LOGGER.log(Level.SEVERE, "IO exception occurred");
+            ex.printStackTrace();
         }
     }
 
@@ -111,24 +205,7 @@ public class GCPerfDriver {
         return resultEntry.get().getKey();
     }
 
-    private static void createCSVFile(Map<GCType, List<Double>> gcTimeMeasurements, String fileName) {
-        /* >>gcType<<,>>run no.<<,>>time<< */
-        try (BufferedWriter bufferedWriter = new BufferedWriter(new FileWriter(fileName))) {
-            for (GCType gcType : GCPerfDriver.gcTypes) {
-                List<Double> runs = gcTimeMeasurements.get(gcType);
-                StringBuilder stringBuilder = new StringBuilder();
-                for (int i = 0; i < runs.size(); i++) {
-                    stringBuilder.append(gcType.name()).append(",").append(i + 1).append(",").append(runs.get(i)).append("\n");
-                }
-                bufferedWriter.write(stringBuilder.toString());
-            }
-        } catch (IOException ex) {
-            LOGGER.log(Level.SEVERE, "IO exception occurred");
-            ex.printStackTrace();
-        }
-    }
-
-    private static Map<GCType, List<Double>> performGCAnalysis(String appName, int runs, int initHeapIncrementSize,
+    private static Map<GCType, List<Double>> performGCAnalysis(int runs, int initHeapIncrementSize,
                                                                int maxHeapIncrementSize) throws IOException {
         Map<GCType, List<Double>> performanceMap = new HashMap<>();
         Map<GCType, Double> avgRuns = new HashMap<>();
@@ -143,11 +220,10 @@ public class GCPerfDriver {
             LOGGER.log(Level.INFO, "Expected no. of runs: " + runs);
             for (int i = 0; i < noOfRuns; i++) {
                 int xms, xmx;
-                if(!mallocFailure && gcType == GCType.SHENANDOAH) {
+                if (!mallocFailure && gcType == GCType.SHENANDOAH) {
                     xms = Integer.min(INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH + (lastRunWithNoMallocFailure * initHeapIncrementSize), 2048);
                     xmx = Integer.min(MAX_HEAP_SIZE_DEFAULT_SHENANDOAH + (lastRunWithNoMallocFailure * initHeapIncrementSize), 8192);
-                }
-                else {
+                } else {
                     if (gcType == GCType.SHENANDOAH) {
                         xms = Integer.min(INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH + (i * initHeapIncrementSize), 2048);
                         xmx = Integer.min(MAX_HEAP_SIZE_DEFAULT_SHENANDOAH + (i * initHeapIncrementSize), 8192);
@@ -168,13 +244,14 @@ public class GCPerfDriver {
                     LOGGER.log(Level.WARNING, "Maximum heap size (Xmx) reached");
                 }
                 ProcessBuilder builder = new ProcessBuilder(buildExecutableCommandArray(buildCLI(gcType, xms,
-                        xmx), appName));
+                        xmx)));
+                builder.directory((Paths.get(LOC_PATH.toString() + "/bin")).toFile());
                 File outFile = createOutFile(builder, false);
                 File outErrFile = createOutFile(builder, true);
                 final AtomicReference<Process> process = new AtomicReference<>();
                 final AtomicBoolean processSuspended = new AtomicBoolean();
                 mallocFailure = createProcessThread(process, processSuspended, builder, gcType, avgRuns, outFile, mallocFailure);
-                if(!mallocFailure && gcType == GCType.SHENANDOAH) {
+                if (!mallocFailure && gcType == GCType.SHENANDOAH) {
                     lastRunWithNoMallocFailure = i;
                 }
                 waitForMainLock();
@@ -209,8 +286,8 @@ public class GCPerfDriver {
             }
             if (!outOfMemoryError.get()) {
                 LOGGER.log(Level.SEVERE, "Unknown error occurred, ending analysis");
-                throw new IllegalStateException("Unknown error occurred during application run. " +
-                        "Please verify the integrity of the .class file.");
+                throw new IllegalArgumentException("Unknown error occurred during application run. " +
+                        "Please verify the integrity of the .class file or check the error output for more details");
             }
             noOfRuns++;
         }
@@ -233,6 +310,9 @@ public class GCPerfDriver {
         double time = 0.0;
         if (!erroneousRun.get()) {
             time = yieldGCTimeFromSource(yieldOutputStringsFromFile(outFile), gcType);
+            if (gcType == GCType.SHENANDOAH) {
+                lastGoodShenandoahRun = time;
+            }
             measuredTimes.add(time);
             totalTime += time;
         }
@@ -241,7 +321,7 @@ public class GCPerfDriver {
     }
 
     private static boolean createProcessThread(final AtomicReference<Process> process, final AtomicBoolean processSuspended,
-                                            ProcessBuilder builder, GCType gcType, Map<GCType, Double> avgRuns, File outFile,
+                                               ProcessBuilder builder, GCType gcType, Map<GCType, Double> avgRuns, File outFile,
                                                boolean mallocFailure) {
         Thread processThread = new Thread(() -> {
             try {
@@ -250,7 +330,7 @@ public class GCPerfDriver {
                     watcherLock.notify();
                 }
                 process.get().waitFor();
-                if(gcType != GCType.SHENANDOAH) {
+                if (gcType != GCType.SHENANDOAH) {
                     synchronized (mainLock) {
                         mainLock.notify();
                     }
@@ -270,7 +350,7 @@ public class GCPerfDriver {
     }
 
     private static boolean startWatcherThread(final AtomicReference<Process> process, final AtomicBoolean processSuspended,
-                                           Map<GCType, Double> avgRunsMap, Thread processThread, File outFile, boolean mallocFailure) {
+                                              Map<GCType, Double> avgRunsMap, Thread processThread, File outFile, boolean mallocFailure) {
         LOGGER.log(Level.FINE, "Detected Shenandoah GC Type, initializing timeout watcher thread");
         AtomicBoolean supposedMemoryAllocationFailure = new AtomicBoolean(false);
         Thread watcherThread = new Thread(() -> {
@@ -279,20 +359,18 @@ public class GCPerfDriver {
                     watcherLock.wait();
                 }
                 Process processOnStart = process.get();
-                if(mallocFailure) {
+                if (mallocFailure) {
                     induceThreadSleep(avgRunsMap, 0);
-                }
-                else { //premature interrupt in last run
+                } else { //premature interrupt in last run
                     induceThreadSleep(avgRunsMap, GCPerfDriver.prematureProcessInterrupts);
                 }
                 if (process.get().pid() == processOnStart.pid() && processThread.isAlive()) {
                     processOnStart.destroy();
                     int continuousHandleAllocationCount = countContinuousHandleAllocations(outFile);
-                    if(continuousHandleAllocationCount >= 3) { //pretty sure small heap size would cause this
+                    if (continuousHandleAllocationCount >= 3) { //pretty sure small heap size would cause this
                         LOGGER.log(Level.WARNING, "Possibly selected heap size was too small, rerunning with bigger heap");
                         supposedMemoryAllocationFailure.set(true);
-                    }
-                    else {
+                    } else {
                         LOGGER.log(Level.WARNING, "Probable premature process interrupt happened");
                         prematureProcessInterrupts++;
                     }
@@ -332,13 +410,12 @@ public class GCPerfDriver {
         int continuousHandleAllocationCount = 0;
         int counter = 0;
         for (String logLine : triggers) {
-            if(logLine.contains("Trigger: Handle Allocation Failure")) {
+            if (logLine.contains("Trigger: Handle Allocation Failure")) {
                 counter++;
-                if(counter > continuousHandleAllocationCount) {
+                if (counter > continuousHandleAllocationCount) {
                     continuousHandleAllocationCount = counter;
                 }
-            }
-            else if(!logLine.contains("Trigger: Free")) {
+            } else if (!logLine.contains("Trigger: Free")) {
                 counter = 0;
             }
         }
@@ -354,10 +431,14 @@ public class GCPerfDriver {
                 }
             }
             double avgRuns = totalRuns / GCPerfDriver.gcTypes.size();
-            double shenandoahWaitThresholdInMs = 3 * avgRuns;
-            Thread.sleep((long) (shenandoahWaitThresholdInMs * 1000 * (prematureProcessInterrupts + 1)));
+            double shenandoahWaitThresholdInMs = 2 * avgRuns;
+            Thread.sleep((long) Math.max(250, (shenandoahWaitThresholdInMs * 1000 * (prematureProcessInterrupts + 1))));
         } else {
-            Thread.sleep(3 * 1000L * (prematureProcessInterrupts + 1));
+            if (lastGoodShenandoahRun == 0) {
+                Thread.sleep(2 * 1000L * (prematureProcessInterrupts + 1));
+            } else {
+                Thread.sleep((long) ((lastGoodShenandoahRun + 0.025) * 1000L * (prematureProcessInterrupts + 1)));
+            }
         }
     }
 
@@ -420,7 +501,7 @@ public class GCPerfDriver {
         return cli;
     }
 
-    private static String[] buildExecutableCommandArray(CLI cli, String appName) {
+    private static String[] buildExecutableCommandArray(CLI cli) {
         List<String> stringList = new ArrayList<>();
         stringList.add("java");
         for (CLI.VMOptions vmOption : cli.getVmOptions()) {
@@ -433,7 +514,7 @@ public class GCPerfDriver {
             stringList.add(gcOption.getOptionString());
         }
         stringList.add(cli.getGcType().getCliOption());
-        stringList.add(appName);
+        stringList.add(mainClass);
         String[] resultArray = new String[stringList.size()];
         AtomicInteger ai = new AtomicInteger(-1);
         stringList.forEach(string -> resultArray[ai.incrementAndGet()] = string);
