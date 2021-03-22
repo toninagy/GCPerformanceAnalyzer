@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.DecimalFormat;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -23,8 +24,12 @@ public class GCPerfDriver {
     public static final int INITIAL_HEAP_SIZE_DEFAULT = 4;
     public static final int INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH = 40;
     public static final int MAX_HEAP_SIZE_DEFAULT = 64;
-    public static final int MAX_HEAP_SIZE_DEFAULT_SHENANDOAH = 200;
+    public static final int MAX_HEAP_SIZE_DEFAULT_SHENANDOAH = 640;
     private static final Path LOC_PATH = Paths.get("").toAbsolutePath();
+    private static final Path LOC_OUT_PATH = Paths.get(LOC_PATH + "/res/out");
+    private static final Path LOC_OUT_ERR_PATH = Paths.get(LOC_PATH + "/res/outErr").toAbsolutePath();
+    private static final Path LOC_OUT_BIN_PATH = Paths.get(LOC_PATH + "/bin").toAbsolutePath();
+    private static final Path LOC_OUT_CSV_PATH = Paths.get(LOC_PATH + "/res/csv").toAbsolutePath();
     private static final Logger LOGGER = Logger.getLogger(GCPerfDriver.class.getSimpleName());
     private static final int BUFFER_SIZE = 8 * 1024;
 
@@ -51,7 +56,8 @@ public class GCPerfDriver {
             list.add(GCType.ZGC);
             list.add(GCType.SHENANDOAH);
 //            launch("App", 2, 64, 256, list);
-            launch(new File("mass-deploy.jar"), 2, 64, 256, list);
+            launch(new File("mass-deploy.jar"), 2, 640, 999,
+                    list, true);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
@@ -65,8 +71,9 @@ public class GCPerfDriver {
     }
 
     public static void launch(File app, int numOfRuns, int initHeapIncrementSize,
-                              int maxHeapIncrementSize, List<GCType> gcTypes) throws IOException, PythonExecutionException,
-                                                                                InterruptedException {
+                              int maxHeapIncrementSize, List<GCType> gcTypes, boolean exportToCSV) throws IOException,
+            PythonExecutionException, InterruptedException {
+
         GCPerfDriver.gcTypes = new ArrayList<>(gcTypes);
         isShenandoahOnly = GCPerfDriver.gcTypes.contains(GCType.SHENANDOAH) && GCPerfDriver.gcTypes.size() == 1;
         extractBinariesAndSetMainClass(app);
@@ -75,25 +82,27 @@ public class GCPerfDriver {
         plotResults(gcTimeMeasurements);
         Map<GCType, Double> avgRuns = calculateAvgRuns(gcTimeMeasurements);
         GCType suggestedGCType = selectSuggestedGC(avgRuns);
-        createCSVFile(gcTimeMeasurements, "results.csv");
+        if(exportToCSV) {
+            SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss");
+            Date date = new Date(System.currentTimeMillis());
+            createCSVFile(gcTimeMeasurements, "results-" + formatter.format(date) + ".csv");
+        }
         LOGGER.log(Level.INFO, "Suggested GC Type: " + suggestedGCType.name());
     }
 
     private static void extractBinariesAndSetMainClass(File file) throws IOException, InterruptedException {
         String fileName = file.getName();
-        final Path targetDirPath = Paths.get(LOC_PATH.toString() + "/bin");
-
-        createBinDirectoryAndCopyFile(targetDirPath, file);
+        createBinDirectoryAndCopyFile(file);
 
         if(fileName.endsWith(".class")) {
             mainClass = fileName.substring(0, fileName.length() - 6);
         }
         else if (fileName.endsWith(".jar")) {
             ProcessBuilder processBuilder = new ProcessBuilder("jar", "xf", fileName);
-            processBuilder.directory(targetDirPath.toFile());
+            processBuilder.directory(LOC_OUT_BIN_PATH.toFile());
             Process process = processBuilder.start();
             process.waitFor();
-            File[] files = Paths.get(targetDirPath + "/META-INF").toFile().listFiles();
+            File[] files = Paths.get(LOC_OUT_BIN_PATH + "/META-INF").toFile().listFiles();
             if(files == null) {
                 LOGGER.log(Level.SEVERE, "Empty binaries directory");
                 throw new IllegalArgumentException("Empty binaries directory");
@@ -126,16 +135,19 @@ public class GCPerfDriver {
         }
     }
 
-    private static void createBinDirectoryAndCopyFile(Path targetDirPath, File file) throws IOException {
-        if(Files.exists(targetDirPath)) {
-            if(!deleteFilesInDirectory(targetDirPath.toFile())) {
+    private static void createBinDirectoryAndCopyFile(File file) throws IOException {
+        if(Files.exists(LOC_OUT_BIN_PATH)) {
+            if(!deleteFilesInDirectory(LOC_OUT_BIN_PATH.toFile())) {
                 LOGGER.log(Level.SEVERE, "Couldn't delete files in binaries directory");
                 throw new IOException("Couldn't delete files in binaries directory. " +
                         "Possible permission denial.");
             }
         }
-        Files.createDirectory(targetDirPath);
-        copyFileToDir(targetDirPath, file);
+        Files.createDirectory(LOC_OUT_BIN_PATH);
+        Files.createDirectories(LOC_OUT_PATH);
+        Files.createDirectories(LOC_OUT_ERR_PATH);
+        Files.createDirectories(LOC_OUT_CSV_PATH);
+        copyFileToBinDirectory(file);
     }
 
     private static boolean deleteFilesInDirectory(File directory) {
@@ -148,8 +160,8 @@ public class GCPerfDriver {
         return directory.delete();
     }
 
-    private static void copyFileToDir(Path path, File file) throws IOException {
-        File copy = new File(path.toString() + "/" + file.getName());
+    private static void copyFileToBinDirectory(File file) throws IOException {
+        File copy = new File(LOC_OUT_BIN_PATH.toString() + "/" + file.getName());
         try (InputStream in = new BufferedInputStream(new FileInputStream(file));
              OutputStream out = new BufferedOutputStream(new FileOutputStream(copy))) {
             byte[] buffer = new byte[1024];
@@ -163,14 +175,15 @@ public class GCPerfDriver {
 
     private static void createCSVFile(Map<GCType, List<Double>> gcTimeMeasurements, String fileName) {
         /* >>gcType<<,>>run no.<<,>>time<< */
-        try (BufferedWriter bufferedWriter = new BufferedWriter(new FileWriter(fileName))) {
+        File outFile = new File(LOC_OUT_CSV_PATH + "/" + fileName);
+        try (PrintWriter printWriter = new PrintWriter(outFile)) {
             for (GCType gcType : GCPerfDriver.gcTypes) {
                 List<Double> runs = gcTimeMeasurements.get(gcType);
                 StringBuilder stringBuilder = new StringBuilder();
                 for (int i = 0; i < runs.size(); i++) {
                     stringBuilder.append(gcType.name()).append(",").append(i + 1).append(",").append(runs.get(i)).append("\n");
                 }
-                bufferedWriter.write(stringBuilder.toString());
+                printWriter.write(stringBuilder.toString());
             }
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
@@ -245,7 +258,7 @@ public class GCPerfDriver {
                 }
                 ProcessBuilder builder = new ProcessBuilder(buildExecutableCommandArray(buildCLI(gcType, xms,
                         xmx)));
-                builder.directory((Paths.get(LOC_PATH.toString() + "/bin")).toFile());
+                builder.directory(LOC_OUT_BIN_PATH.toFile());
                 File outFile = createOutFile(builder, false);
                 File outErrFile = createOutFile(builder, true);
                 final AtomicReference<Process> process = new AtomicReference<>();
@@ -445,10 +458,10 @@ public class GCPerfDriver {
     private static File createOutFile(ProcessBuilder builder, boolean isErrFile) {
         File outFile;
         if (!isErrFile) {
-            outFile = new File("out" + ++OUT_FILE_NO + ".txt");
+            outFile = new File(LOC_OUT_PATH + "/out" + ++OUT_FILE_NO + ".txt");
             builder.redirectOutput(outFile);
         } else {
-            outFile = new File("outErr" + OUT_FILE_NO + ".txt");
+            outFile = new File(LOC_OUT_ERR_PATH + "/outErr" + OUT_FILE_NO + ".txt");
             builder.redirectError(outFile);
         }
         return outFile;
