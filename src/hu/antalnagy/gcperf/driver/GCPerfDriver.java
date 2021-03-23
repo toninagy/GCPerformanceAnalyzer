@@ -21,10 +21,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class GCPerfDriver {
-    public static final int INITIAL_HEAP_SIZE_DEFAULT = 4;
-    public static final int INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH = 40;
-    public static final int MAX_HEAP_SIZE_DEFAULT = 64;
-    public static final int MAX_HEAP_SIZE_DEFAULT_SHENANDOAH = 640;
+    private static final int MAX_INIT_HEAP_SIZE = 2048;
+    private static final int MAX_MAX_HEAP_SIZE = 8192;
+
     private static final Path LOC_PATH = Paths.get("").toAbsolutePath();
     private static final Path LOC_OUT_PATH = Paths.get(LOC_PATH + "/res/out");
     private static final Path LOC_OUT_ERR_PATH = Paths.get(LOC_PATH + "/res/outErr").toAbsolutePath();
@@ -46,18 +45,19 @@ public class GCPerfDriver {
 
     private static List<GCType> gcTypes = null;
     private static boolean isShenandoahOnly = false;
-    private static int prematureProcessInterrupts = 0;
-    private static double lastGoodShenandoahRun = 0;
+    private static final AtomicInteger prematureProcessInterrupts = new AtomicInteger(0);
+    private static double lastGoodShenandoahRunTime = 0;
+    private static final AtomicBoolean memoryAllocationFailureOnLastRun = new AtomicBoolean(false);
 
     public static void main(String[] args) {
         try {
             var list = new ArrayList<GCType>();
 //            list.add(GCType.G1);
-            list.add(GCType.ZGC);
+//            list.add(GCType.ZGC);
             list.add(GCType.SHENANDOAH);
 //            launch("App", 2, 64, 256, list);
-            launch(new File("mass-deploy.jar"), 2, 640, 999,
-                    list, true);
+            launch(new File("App.class"), 5, 100, 200,
+                    15, 30, list, true);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
@@ -70,15 +70,24 @@ public class GCPerfDriver {
         }
     }
 
-    public static void launch(File app, int numOfRuns, int initHeapIncrementSize,
+    /***
+     * @param file .class file or .jar file
+     * @param initStartHeapSize Start heap size in MB
+     * @param initMaxHeapSize Start maximum heap size in MB
+     * @param startHeapIncrementSize Start heap size increment in MB
+     * @param maxHeapIncrementSize Maximum heap size increment in MB
+     * @param gcTypes Selected Garbage Collector Types
+     * @param exportToCSV Export to csv file
+     */
+    public static void launch(File file, int numOfRuns, int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize,
                               int maxHeapIncrementSize, List<GCType> gcTypes, boolean exportToCSV) throws IOException,
             PythonExecutionException, InterruptedException {
 
         GCPerfDriver.gcTypes = new ArrayList<>(gcTypes);
         isShenandoahOnly = GCPerfDriver.gcTypes.contains(GCType.SHENANDOAH) && GCPerfDriver.gcTypes.size() == 1;
-        extractBinariesAndSetMainClass(app);
-        Map<GCType, List<Double>> gcTimeMeasurements = performGCAnalysis(numOfRuns, initHeapIncrementSize,
-                maxHeapIncrementSize);
+        extractBinariesAndSetMainClass(file);
+        Map<GCType, List<Double>> gcTimeMeasurements = performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize,
+                startHeapIncrementSize, maxHeapIncrementSize);
         plotResults(gcTimeMeasurements);
         Map<GCType, Double> avgRuns = calculateAvgRuns(gcTimeMeasurements);
         GCType suggestedGCType = selectSuggestedGC(avgRuns);
@@ -174,10 +183,10 @@ public class GCPerfDriver {
     }
 
     private static void createCSVFile(Map<GCType, List<Double>> gcTimeMeasurements, String fileName) {
-        /* >>gcType<<,>>run no.<<,>>time<< */
+        /* >>gcType<<,>>run no.<<,>>time<<,>>startHeapSize<<,>>maxHeapSize<< */
         File outFile = new File(LOC_OUT_CSV_PATH + "/" + fileName);
         try (PrintWriter printWriter = new PrintWriter(outFile)) {
-            for (GCType gcType : GCPerfDriver.gcTypes) {
+            for (GCType gcType : gcTypes) {
                 List<Double> runs = gcTimeMeasurements.get(gcType);
                 StringBuilder stringBuilder = new StringBuilder();
                 for (int i = 0; i < runs.size(); i++) {
@@ -194,15 +203,20 @@ public class GCPerfDriver {
     private static void plotResults(Map<GCType, List<Double>> measurements) throws IOException, PythonExecutionException {
         GCPerfPlot gcPerfPlot = new GCPerfPlot(GCType.SERIAL, new ArrayList<>());
         for (Map.Entry<GCType, List<Double>> entry : measurements.entrySet()) {
-            gcPerfPlot.setGcType(entry.getKey());
-            gcPerfPlot.setMeasurements(entry.getValue());
-            gcPerfPlot.plotMeasurements();
+            if(!entry.getValue().isEmpty()) {
+                gcPerfPlot.setGcType(entry.getKey());
+                gcPerfPlot.setMeasurements(entry.getValue());
+                gcPerfPlot.plotMeasurements();
+            }
+            else {
+                LOGGER.log(Level.WARNING, "Empty values for GC Type: " + entry.getKey());
+            }
         }
     }
 
     private static Map<GCType, Double> calculateAvgRuns(Map<GCType, List<Double>> performanceMap) {
         Map<GCType, Double> avgRuns = new HashMap<>();
-        for (GCType gcType : GCPerfDriver.gcTypes) {
+        for (GCType gcType : gcTypes) {
             List<Double> performanceTimes = performanceMap.get(gcType);
             double aggregatedTimes = performanceTimes.stream().reduce(Double::sum).orElse(0.0);
             avgRuns.put(gcType, aggregatedTimes / performanceTimes.size());
@@ -218,37 +232,43 @@ public class GCPerfDriver {
         return resultEntry.get().getKey();
     }
 
-    private static Map<GCType, List<Double>> performGCAnalysis(int runs, int initHeapIncrementSize,
-                                                               int maxHeapIncrementSize) throws IOException {
+    private static int[] calculateHeapSize(int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize, int maxHeapIncrementSize,
+                                           int i, int prematureProcessInterrupts) {
+        int[] xm = new int[2];
+        xm[0] = Integer.min(initStartHeapSize + ((i - prematureProcessInterrupts) * startHeapIncrementSize), MAX_INIT_HEAP_SIZE);
+        xm[1] = Integer.min(initMaxHeapSize + ((i - prematureProcessInterrupts) * maxHeapIncrementSize), MAX_MAX_HEAP_SIZE);
+        return xm;
+    }
+
+    private static Map<GCType, List<Double>> performGCAnalysis(int runs, int initStartHeapSize, int initMaxHeapSize,
+                                                               int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
         Map<GCType, List<Double>> performanceMap = new HashMap<>();
         Map<GCType, Double> avgRuns = new HashMap<>();
-        for (GCType gcType : GCPerfDriver.gcTypes) {
+        for (GCType gcType : gcTypes) {
             List<Double> measuredTimes = new ArrayList<>();
             double totalTime = 0.0;
             int noOfRuns = runs;
-            boolean mallocFailure = false;
             int lastRunWithNoMallocFailure = 0;
-            prematureProcessInterrupts = 0;
+            prematureProcessInterrupts.set(0);
             LOGGER.log(Level.INFO, "Initializing run with GC Type: " + gcType.name());
             LOGGER.log(Level.INFO, "Expected no. of runs: " + runs);
             for (int i = 0; i < noOfRuns; i++) {
-                int xms, xmx;
-                if (!mallocFailure && gcType == GCType.SHENANDOAH) {
-                    xms = Integer.min(INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH + (lastRunWithNoMallocFailure * initHeapIncrementSize), 2048);
-                    xmx = Integer.min(MAX_HEAP_SIZE_DEFAULT_SHENANDOAH + (lastRunWithNoMallocFailure * initHeapIncrementSize), 8192);
-                } else {
-                    if (gcType == GCType.SHENANDOAH) {
-                        xms = Integer.min(INITIAL_HEAP_SIZE_DEFAULT_SHENANDOAH + (i * initHeapIncrementSize), 2048);
-                        xmx = Integer.min(MAX_HEAP_SIZE_DEFAULT_SHENANDOAH + (i * initHeapIncrementSize), 8192);
-                    } else {
-                        xms = Integer.min(INITIAL_HEAP_SIZE_DEFAULT + (i * initHeapIncrementSize), 2048);
-                        xmx = Integer.min(MAX_HEAP_SIZE_DEFAULT + (i * maxHeapIncrementSize), 8192);
-                    }
+                if(Math.abs(noOfRuns - lastRunWithNoMallocFailure) > 20) {
+                    LOGGER.log(Level.SEVERE, "Analysis suspended for GC Type: " + gcType.name() +
+                            "\nReason: 10 consecutive failed runs\n" +
+                            "Possible problems include too small general heap size or too small heap size increments");
+                    break;
                 }
+                int[] xm = calculateHeapSize(initStartHeapSize, initMaxHeapSize, startHeapIncrementSize, maxHeapIncrementSize,
+                        i, prematureProcessInterrupts.get());
+                memoryAllocationFailureOnLastRun.set(false);
+                int xms = xm[0];
+                int xmx = xm[1];
+                LOGGER.log(Level.INFO, "Initializing run no.: " + (i+1) + "; xms: " + xms + "(M); xmx: " + xmx + "(M)");
                 if (xms == 2048 && xmx == 8192) {
                     i = noOfRuns;
-                    LOGGER.log(Level.WARNING, "Maximum initial heap size (Xms) and maximum heap size (Xmx) reached," +
-                            "initializing last run");
+                    LOGGER.log(Level.WARNING, "Maximum initial heap size (Xms) and maximum heap size (Xmx) reached\n" +
+                            "Initializing last run");
                 }
                 if (xms == 2048) {
                     LOGGER.log(Level.WARNING, "Maximum initial heap size (Xms) reached");
@@ -263,15 +283,14 @@ public class GCPerfDriver {
                 File outErrFile = createOutFile(builder, true);
                 final AtomicReference<Process> process = new AtomicReference<>();
                 final AtomicBoolean processSuspended = new AtomicBoolean();
-                mallocFailure = createProcessThread(process, processSuspended, builder, gcType, avgRuns, outFile, mallocFailure);
-                if (!mallocFailure && gcType == GCType.SHENANDOAH) {
+                createProcessThread(process, processSuspended, builder, gcType, avgRuns, outFile);
+                waitForMainLock();
+                if (!memoryAllocationFailureOnLastRun.get()) {
                     lastRunWithNoMallocFailure = i;
                 }
-                waitForMainLock();
                 final AtomicBoolean erroneousRun = new AtomicBoolean(false);
-                final AtomicBoolean outOfMemoryError = new AtomicBoolean(false);
-                noOfRuns = handleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, outOfMemoryError,
-                        process, outErrFile);
+                noOfRuns = getNumOfRunsAndHandleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, process,
+                        outErrFile);
                 totalTime = yieldRunTimes(erroneousRun, outFile, gcType, measuredTimes, totalTime, i);
             }
             avgRuns.put(gcType, totalTime / runs);
@@ -280,24 +299,25 @@ public class GCPerfDriver {
         return performanceMap;
     }
 
-    private static int handleUnexpectedThreadEvents(int noOfRuns, final AtomicBoolean processSuspended,
-                                                    final AtomicBoolean erroneousRun, final AtomicBoolean outOfMemoryError,
-                                                    final AtomicReference<Process> process, File outErrFile) throws FileNotFoundException {
+    private static int getNumOfRunsAndHandleUnexpectedThreadEvents(int noOfRuns, final AtomicBoolean processSuspended,
+                                                    final AtomicBoolean erroneousRun, final AtomicReference<Process> process,
+                                                                   File outErrFile) throws FileNotFoundException {
         if (processSuspended.get()) {
             erroneousRun.set(true);
             noOfRuns++;
         } else if (process.get().exitValue() != 0) {
+            boolean outOfMemoryError = false;
             erroneousRun.set(true);
             LOGGER.log(Level.WARNING, "Process ended abnormally, exit code: " + process.get().exitValue());
             try (Scanner scanner = new Scanner(outErrFile)) {
                 while (scanner.hasNext()) {
                     String line = scanner.nextLine();
                     if (line.contains("OutOfMemoryError")) {
-                        outOfMemoryError.set(true);
+                        outOfMemoryError = true;
                     }
                 }
             }
-            if (!outOfMemoryError.get()) {
+            if (!outOfMemoryError) {
                 LOGGER.log(Level.SEVERE, "Unknown error occurred, ending analysis");
                 throw new IllegalArgumentException("Unknown error occurred during application run. " +
                         "Please verify the integrity of the .class file or check the error output for more details");
@@ -320,22 +340,24 @@ public class GCPerfDriver {
 
     private static double yieldRunTimes(final AtomicBoolean erroneousRun, File outFile, GCType gcType, List<Double> measuredTimes,
                                         double totalTime, int runNo) {
-        double time = 0.0;
+        double time;
         if (!erroneousRun.get()) {
             time = yieldGCTimeFromSource(yieldOutputStringsFromFile(outFile), gcType);
             if (gcType == GCType.SHENANDOAH) {
-                lastGoodShenandoahRun = time;
+                lastGoodShenandoahRunTime = time;
             }
             measuredTimes.add(time);
             totalTime += time;
+            LOGGER.log(Level.INFO, "Run no.: " + (runNo + 1) + " : time: " + time);
         }
-        LOGGER.log(Level.INFO, "Run no.: " + (runNo + 1) + " : time: " + time);
+        else {
+            LOGGER.log(Level.INFO, "Run no.: " + (runNo + 1) + " failed");
+        }
         return totalTime;
     }
 
-    private static boolean createProcessThread(final AtomicReference<Process> process, final AtomicBoolean processSuspended,
-                                               ProcessBuilder builder, GCType gcType, Map<GCType, Double> avgRuns, File outFile,
-                                               boolean mallocFailure) {
+    private static void createProcessThread(final AtomicReference<Process> process, final AtomicBoolean processSuspended,
+                                               ProcessBuilder builder, GCType gcType, Map<GCType, Double> avgRuns, File outFile) {
         Thread processThread = new Thread(() -> {
             try {
                 process.set(builder.start());
@@ -356,36 +378,34 @@ public class GCPerfDriver {
             }
         });
         processThread.start();
-        if (gcType != GCType.SHENANDOAH) {
-            return false;
+        if (gcType == GCType.SHENANDOAH) {
+            startWatcherThread(process, processSuspended, avgRuns, processThread, outFile);
         }
-        return startWatcherThread(process, processSuspended, avgRuns, processThread, outFile, mallocFailure);
     }
 
-    private static boolean startWatcherThread(final AtomicReference<Process> process, final AtomicBoolean processSuspended,
-                                              Map<GCType, Double> avgRunsMap, Thread processThread, File outFile, boolean mallocFailure) {
+    private static void startWatcherThread(final AtomicReference<Process> process, final AtomicBoolean processSuspended,
+                                              Map<GCType, Double> avgRunsMap, Thread processThread, File outFile) {
         LOGGER.log(Level.FINE, "Detected Shenandoah GC Type, initializing timeout watcher thread");
-        AtomicBoolean supposedMemoryAllocationFailure = new AtomicBoolean(false);
         Thread watcherThread = new Thread(() -> {
             try {
                 synchronized (watcherLock) {
                     watcherLock.wait();
                 }
                 Process processOnStart = process.get();
-                if (mallocFailure) {
+                if (memoryAllocationFailureOnLastRun.get()) {
                     induceThreadSleep(avgRunsMap, 0);
                 } else { //premature interrupt in last run
-                    induceThreadSleep(avgRunsMap, GCPerfDriver.prematureProcessInterrupts);
+                    induceThreadSleep(avgRunsMap, prematureProcessInterrupts.get());
                 }
                 if (process.get().pid() == processOnStart.pid() && processThread.isAlive()) {
                     processOnStart.destroy();
                     int continuousHandleAllocationCount = countContinuousHandleAllocations(outFile);
                     if (continuousHandleAllocationCount >= 3) { //pretty sure small heap size would cause this
                         LOGGER.log(Level.WARNING, "Possibly selected heap size was too small, rerunning with bigger heap");
-                        supposedMemoryAllocationFailure.set(true);
+                        memoryAllocationFailureOnLastRun.set(true);
                     } else {
                         LOGGER.log(Level.WARNING, "Probable premature process interrupt happened");
-                        prematureProcessInterrupts++;
+                        prematureProcessInterrupts.incrementAndGet();
                     }
                     processThread.interrupt();
                     synchronized (mainLock) {
@@ -404,7 +424,6 @@ public class GCPerfDriver {
             }
         });
         watcherThread.start();
-        return supposedMemoryAllocationFailure.get();
     }
 
     private static int countContinuousHandleAllocations(File outFile) {
@@ -438,19 +457,19 @@ public class GCPerfDriver {
     private static void induceThreadSleep(Map<GCType, Double> avgRunsMap, int prematureProcessInterrupts) throws InterruptedException {
         if (!isShenandoahOnly) {
             double totalRuns = 0.0;
-            for (GCType gcType : GCPerfDriver.gcTypes) {
+            for (GCType gcType : gcTypes) {
                 if (gcType != GCType.SHENANDOAH) {
                     totalRuns += avgRunsMap.get(gcType);
                 }
             }
-            double avgRuns = totalRuns / GCPerfDriver.gcTypes.size();
+            double avgRuns = totalRuns / gcTypes.size();
             double shenandoahWaitThresholdInMs = 2 * avgRuns;
             Thread.sleep((long) Math.max(250, (shenandoahWaitThresholdInMs * 1000 * (prematureProcessInterrupts + 1))));
         } else {
-            if (lastGoodShenandoahRun == 0) {
+            if (lastGoodShenandoahRunTime == 0) {
                 Thread.sleep(2 * 1000L * (prematureProcessInterrupts + 1));
             } else {
-                Thread.sleep((long) ((lastGoodShenandoahRun + 0.025) * 1000L * (prematureProcessInterrupts + 1)));
+                Thread.sleep((long) ((lastGoodShenandoahRunTime + 0.025) * 1000L * (prematureProcessInterrupts + 1)));
             }
         }
     }
@@ -475,10 +494,12 @@ public class GCPerfDriver {
      */
     private static CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
         if (startHeapSize < 1) {
-            throw new IllegalArgumentException("Invalid argument for initial heap size!");
+            LOGGER.log(Level.SEVERE, "Invalid argument for initial heap size!");
+            throw new IllegalArgumentException("Please provide an initial heap size of at least 1MB!");
         }
         if (maxHeapSize < 16) {
-            throw new IllegalArgumentException("Invalid argument for maximum heap size!");
+            LOGGER.log(Level.SEVERE, "Invalid argument for maximum heap size!");
+            throw new IllegalArgumentException("Please provide a maximum heap size of at least 16MB!");
         }
         CLI.VMOptions.Xms.setSize(startHeapSize);
         CLI.VMOptions.Xmx.setSize(maxHeapSize);
