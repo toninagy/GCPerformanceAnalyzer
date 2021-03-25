@@ -46,18 +46,21 @@ public class GCPerfDriver {
     private static List<GCType> gcTypes = null;
     private static boolean isShenandoahOnly = false;
     private static final AtomicInteger prematureProcessInterrupts = new AtomicInteger(0);
-    private static double lastGoodShenandoahRunTime = 0;
+    private static final AtomicInteger prematureRunIncrement = new AtomicInteger(0);
     private static final AtomicBoolean memoryAllocationFailureOnLastRun = new AtomicBoolean(false);
+    private static double lastSuccessfulShenandoahRunTime = 0;
+
 
     public static void main(String[] args) {
         try {
             var list = new ArrayList<GCType>();
-//            list.add(GCType.G1);
-//            list.add(GCType.ZGC);
+            list.add(GCType.SERIAL);
+            list.add(GCType.PARALLEL);
+            list.add(GCType.G1);
+            list.add(GCType.ZGC);
             list.add(GCType.SHENANDOAH);
-//            launch("App", 2, 64, 256, list);
-            launch(new File("App.class"), 5, 100, 200,
-                    15, 30, list, true);
+            launch(new File("App.class"), 1, 600, 700,
+                    50, 100, list, true);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
@@ -250,6 +253,7 @@ public class GCPerfDriver {
             int noOfRuns = runs;
             int lastRunWithNoMallocFailure = 0;
             prematureProcessInterrupts.set(0);
+            prematureRunIncrement.set(0);
             LOGGER.log(Level.INFO, "Initializing run with GC Type: " + gcType.name());
             LOGGER.log(Level.INFO, "Expected no. of runs: " + runs);
             for (int i = 0; i < noOfRuns; i++) {
@@ -261,7 +265,6 @@ public class GCPerfDriver {
                 }
                 int[] xm = calculateHeapSize(initStartHeapSize, initMaxHeapSize, startHeapIncrementSize, maxHeapIncrementSize,
                         i, prematureProcessInterrupts.get());
-                memoryAllocationFailureOnLastRun.set(false);
                 int xms = xm[0];
                 int xmx = xm[1];
                 LOGGER.log(Level.INFO, "Initializing run no.: " + (i+1) + "; xms: " + xms + "(M); xmx: " + xmx + "(M)");
@@ -344,7 +347,7 @@ public class GCPerfDriver {
         if (!erroneousRun.get()) {
             time = yieldGCTimeFromSource(yieldOutputStringsFromFile(outFile), gcType);
             if (gcType == GCType.SHENANDOAH) {
-                lastGoodShenandoahRunTime = time;
+                lastSuccessfulShenandoahRunTime = time;
             }
             measuredTimes.add(time);
             totalTime += time;
@@ -394,8 +397,8 @@ public class GCPerfDriver {
                 Process processOnStart = process.get();
                 if (memoryAllocationFailureOnLastRun.get()) {
                     induceThreadSleep(avgRunsMap, 0);
-                } else { //premature interrupt in last run
-                    induceThreadSleep(avgRunsMap, prematureProcessInterrupts.get());
+                } else { //premature interrupt in last run or successful run
+                    induceThreadSleep(avgRunsMap, prematureRunIncrement.get());
                 }
                 if (process.get().pid() == processOnStart.pid() && processThread.isAlive()) {
                     processOnStart.destroy();
@@ -405,7 +408,9 @@ public class GCPerfDriver {
                         memoryAllocationFailureOnLastRun.set(true);
                     } else {
                         LOGGER.log(Level.WARNING, "Probable premature process interrupt happened");
+                        memoryAllocationFailureOnLastRun.set(false);
                         prematureProcessInterrupts.incrementAndGet();
+                        prematureRunIncrement.incrementAndGet();
                     }
                     processThread.interrupt();
                     synchronized (mainLock) {
@@ -414,6 +419,8 @@ public class GCPerfDriver {
                         mainLock.notify();
                     }
                 } else {
+                    memoryAllocationFailureOnLastRun.set(false);
+                    prematureRunIncrement.set(1); //to not wait the before compounded amount of time after a successful run
                     synchronized (mainLock) {
                         mainLock.notify();
                     }
@@ -454,22 +461,23 @@ public class GCPerfDriver {
         return continuousHandleAllocationCount;
     }
 
-    private static void induceThreadSleep(Map<GCType, Double> avgRunsMap, int prematureProcessInterrupts) throws InterruptedException {
-        if (!isShenandoahOnly) {
-            double totalRuns = 0.0;
-            for (GCType gcType : gcTypes) {
-                if (gcType != GCType.SHENANDOAH) {
-                    totalRuns += avgRunsMap.get(gcType);
+    private static void induceThreadSleep(Map<GCType, Double> avgRunsMap, int magnifier) throws InterruptedException {
+        if (lastSuccessfulShenandoahRunTime != 0) {
+            Thread.sleep((long) ((lastSuccessfulShenandoahRunTime + 0.25) * 1000L * (magnifier + 1)));
+        }
+        else {
+            if (!isShenandoahOnly) {
+                double totalRuns = 0.0;
+                for (GCType gcType : gcTypes) {
+                    if (gcType != GCType.SHENANDOAH) {
+                        totalRuns += avgRunsMap.get(gcType);
+                    }
                 }
-            }
-            double avgRuns = totalRuns / gcTypes.size();
-            double shenandoahWaitThresholdInMs = 2 * avgRuns;
-            Thread.sleep((long) Math.max(250, (shenandoahWaitThresholdInMs * 1000 * (prematureProcessInterrupts + 1))));
-        } else {
-            if (lastGoodShenandoahRunTime == 0) {
-                Thread.sleep(2 * 1000L * (prematureProcessInterrupts + 1));
+                double avgRuns = totalRuns / gcTypes.size();
+                double shenandoahWaitThresholdInMs = 2 * avgRuns;
+                Thread.sleep((long) Math.max(250, (shenandoahWaitThresholdInMs * 1000 * (magnifier + 1))));
             } else {
-                Thread.sleep((long) ((lastGoodShenandoahRunTime + 0.025) * 1000L * (prematureProcessInterrupts + 1)));
+                Thread.sleep(2 * 1000L * (magnifier + 1));
             }
         }
     }

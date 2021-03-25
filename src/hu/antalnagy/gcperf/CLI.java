@@ -4,7 +4,7 @@ import java.util.Arrays;
 
 public class CLI {
 
-    private GCType gcType;
+    private final GCType gcType;
     private VMOptions[] vmOptions;
     private VMOptions.GCOptions[] gcOptions;
     private VMOptions.XlogOptions[] xlogOptions;
