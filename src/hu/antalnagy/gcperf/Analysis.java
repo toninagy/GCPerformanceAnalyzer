@@ -14,18 +14,18 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class Analysis {
-
     private static final Path LOC_PATH = Paths.get("").toAbsolutePath();
+    private static final Path LOC_OUT_PATH = Paths.get(LOC_PATH + "/res/out");
+    private static final Path LOC_OUT_ERR_PATH = Paths.get(LOC_PATH + "/res/outErr").toAbsolutePath();
     private static final Path LOC_OUT_BIN_PATH = Paths.get(LOC_PATH + "/bin").toAbsolutePath();
+
+    private static int OUT_FILE_NO = 0;
 
     private static final int MAX_INIT_HEAP_SIZE = 2048;
     private static final int MAX_MAX_HEAP_SIZE = 8192;
 
     private static final Logger LOGGER = Logger.getLogger(Analysis.class.getSimpleName());
     private static final int BUFFER_SIZE = 8 * 1024;
-
-    private final File outFile;
-    private final File outErrFile;
 
     private static final Pattern gcCpuPattern = Pattern.compile("gc,cpu");
     private static final Pattern gcPhasesPattern = Pattern.compile("gc,phases");
@@ -39,7 +39,7 @@ public class Analysis {
 
     private final List<GCType> gcTypes;
     private final Map<GCType, Double> avgRuns = new HashMap<>();
-    private final Map<GCType, List<Double>> performanceMap = new HashMap<>();
+    private final Map<GCType, List<Double>> runtimesMap = new HashMap<>();
     private final Map<GCType, List<Integer>> pausesMap = new HashMap<>();
 
     private static boolean isShenandoahOnly;
@@ -48,34 +48,36 @@ public class Analysis {
     private static final AtomicBoolean memoryAllocationFailureOnLastRun = new AtomicBoolean(false);
     private static double lastSuccessfulShenandoahRunTime = 0;
 
-    public Analysis(String mainClass, List<GCType> gcTypes, File outFile, File outErrFile) {
+    private GCType suggestedGC;
+
+    public Analysis(String mainClass, List<GCType> gcTypes) {
         this.mainClass = mainClass;
         this.gcTypes = new ArrayList<>(gcTypes);
         isShenandoahOnly = gcTypes.contains(GCType.SHENANDOAH) && gcTypes.size() == 1;
-        this.outFile = outFile;
-        this.outErrFile = outErrFile;
     }
 
     public Map<GCType, Double> getAvgRuns() {
         return new HashMap<> (avgRuns);
     }
 
-    public Map<GCType, List<Double>> getPerformanceMap() {
-        return new HashMap<>(performanceMap);
+    public Map<GCType, List<Double>> getRuntimesMap() {
+        return new HashMap<>(runtimesMap);
     }
 
     public Map<GCType, List<Integer>> getPausesMap() {
         return new HashMap<>(pausesMap);
     }
 
-    private void performGCAnalysis(int runs, int initStartHeapSize, int initMaxHeapSize,
-                                   int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
+    public GCType getSuggestedGC() {
+        return suggestedGC;
+    }
+
+    public void performGCAnalysis(int runs, int initStartHeapSize, int initMaxHeapSize,
+                                  int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
         for (GCType gcType : gcTypes) {
             List<Double> measuredTimes = new ArrayList<>();
             List<Integer> pauses = new ArrayList<>();
             double totalTime = 0.0;
-            int fullPauses;
-            int minorPauses;
             int noOfRuns = runs;
             int lastRunWithNoMallocFailure = 0;
             prematureProcessInterrupts.set(0);
@@ -108,6 +110,10 @@ public class Analysis {
                 ProcessBuilder builder = new ProcessBuilder(buildExecutableCommandArray(buildCLI(gcType, xms,
                         xmx)));
                 builder.directory(LOC_OUT_BIN_PATH.toFile());
+                File outFile = createOutFile(false);
+                File outErrFile = createOutFile(true);
+                builder.redirectOutput(outFile);
+                builder.redirectError(outErrFile);
                 final AtomicReference<Process> process = new AtomicReference<>();
                 final AtomicBoolean processSuspended = new AtomicBoolean();
                 createProcessThread(process, processSuspended, builder, gcType, avgRuns, outFile);
@@ -118,16 +124,22 @@ public class Analysis {
                 final AtomicBoolean erroneousRun = new AtomicBoolean(false);
                 noOfRuns = getNumOfRunsAndHandleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, process,
                         outErrFile);
-                totalTime = yieldRunTimes(erroneousRun, outFile, gcType, measuredTimes, totalTime, i);
-                fullPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[0];
-                minorPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[1];
-                pauses.add(fullPauses);
-                pauses.add(minorPauses);
+                if(!erroneousRun.get()) {
+                    totalTime = yieldRunTimes(outFile, gcType, measuredTimes, totalTime, i);
+                    int fullPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[0];
+                    int minorPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[1];
+                    pauses.add(fullPauses);
+                    pauses.add(minorPauses);
+                }
+                else {
+                    LOGGER.log(Level.INFO, "Run no.: " + (i + 1) + " failed");
+                }
             }
             avgRuns.put(gcType, totalTime / runs);
-            performanceMap.put(gcType, measuredTimes);
+            runtimesMap.put(gcType, measuredTimes);
             pausesMap.put(gcType, pauses);
         }
+        setSuggestedGC();
     }
 
     private static int[] calculateHeapSize(int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize, int maxHeapIncrementSize,
@@ -158,6 +170,12 @@ public class Analysis {
         return resultArray;
     }
 
+    /***
+     * @param gcType gcType
+     * @param startHeapSize Start heap size in MB
+     * @param maxHeapSize Maximum heap size in MB
+     * @return CLI
+     */
     private static CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
         if (startHeapSize < 1) {
             LOGGER.log(Level.SEVERE, "Invalid argument for initial heap size!");
@@ -199,6 +217,16 @@ public class Analysis {
                             CLI.VMOptions.XlogOptions.GCHeapExit, CLI.VMOptions.XlogOptions.GCMetaspace, CLI.VMOptions.XlogOptions.GCErgo);
         }
         return cli;
+    }
+
+    private static File createOutFile(boolean isErrFile) {
+        File outFile;
+        if (!isErrFile) {
+            outFile = new File(LOC_OUT_PATH + "/out" + ++OUT_FILE_NO + ".txt");
+        } else {
+            outFile = new File(LOC_OUT_ERR_PATH + "/outErr" + OUT_FILE_NO + ".txt");
+        }
+        return outFile;
     }
 
     private void createProcessThread(final AtomicReference<Process> process, final AtomicBoolean processSuspended,
@@ -363,21 +391,16 @@ public class Analysis {
         return noOfRuns;
     }
 
-    private static double yieldRunTimes(final AtomicBoolean erroneousRun, File outFile, GCType gcType, List<Double> measuredTimes,
+    private static double yieldRunTimes(File outFile, GCType gcType, List<Double> measuredTimes,
                                         double totalTime, int runNo) {
-        double time;
-        if (!erroneousRun.get()) {
-            time = yieldGCTimeFromSource(yieldOutputStringsFromFile(outFile), gcType);
-            if (gcType == GCType.SHENANDOAH) {
-                lastSuccessfulShenandoahRunTime = time;
-            }
-            measuredTimes.add(time);
-            totalTime += time;
-            LOGGER.log(Level.INFO, "Run no.: " + (runNo + 1) + " : time: " + time);
+        double time = yieldGCTimeFromSource(yieldOutputStringsFromFile(outFile), gcType);
+        if (gcType == GCType.SHENANDOAH) {
+            lastSuccessfulShenandoahRunTime = time;
         }
-        else {
-            LOGGER.log(Level.INFO, "Run no.: " + (runNo + 1) + " failed");
-        }
+        measuredTimes.add(time);
+        totalTime += time;
+        LOGGER.log(Level.INFO, "Run no.: " + (runNo + 1) + " : time: " + time);
+
         return totalTime;
     }
 
@@ -414,8 +437,7 @@ public class Analysis {
                 return pauses;
             }
             case SHENANDOAH -> {
-                //TODO fullPauses
-                fullPauses = yieldNoOfPausesHelper(parsedStrings, false, "Pause Full", null);
+                fullPauses = yieldNoOfFullPausesShenandoah(parsedStrings);
                 totalPauses = yieldNoOfPausesHelper(parsedStrings, true, "Pause", "[gc,stats    ]");
                 pauses[0] = fullPauses;
                 pauses[1] = totalPauses - fullPauses;
@@ -447,6 +469,23 @@ public class Analysis {
             }
         }
         return counter;
+    }
+
+    private static int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) { //from statistics
+        for(String line : parsedStrings) {
+            if(line.contains("Full GCs") && line.contains("[gc,stats    ]")) {
+                String[] split = line.split(" ");
+                int i = 0;
+                while(i < split.length) {
+                    String prev = split[i];
+                    String actual = split[++i];
+                    if(actual.equals("Full")) {
+                        return Integer.parseInt(prev);
+                    }
+                }
+            }
+        }
+        return 0;
     }
 
     private static double calculateTotalTimeRounded(List<String> parsedStrings, Pattern pattern1, Pattern pattern2,
@@ -492,5 +531,13 @@ public class Analysis {
             ex.printStackTrace();
         }
         return outputStrings;
+    }
+
+    private void setSuggestedGC() {
+        var resultEntry = avgRuns.entrySet().stream().min(Map.Entry.comparingByValue());
+        if (resultEntry.isEmpty()) {
+            throw new IllegalStateException("Result GC Type not available.");
+        }
+        suggestedGC = resultEntry.get().getKey();
     }
 }
