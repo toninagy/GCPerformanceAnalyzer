@@ -54,12 +54,12 @@ public class GCPerfDriver {
     public static void main(String[] args) {
         try {
             var list = new ArrayList<GCType>();
-            list.add(GCType.SERIAL);
-            list.add(GCType.PARALLEL);
-            list.add(GCType.G1);
-            list.add(GCType.ZGC);
+//            list.add(GCType.SERIAL);
+//            list.add(GCType.PARALLEL);
+//            list.add(GCType.G1);
+//            list.add(GCType.ZGC);
             list.add(GCType.SHENANDOAH);
-            launch(new File("App.class"), 1, 600, 700,
+            launch(new File("App.class"), 1, 300, 700,
                     50, 100, list, true);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
@@ -245,11 +245,15 @@ public class GCPerfDriver {
 
     private static Map<GCType, List<Double>> performGCAnalysis(int runs, int initStartHeapSize, int initMaxHeapSize,
                                                                int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
-        Map<GCType, List<Double>> performanceMap = new HashMap<>();
         Map<GCType, Double> avgRuns = new HashMap<>();
+        Map<GCType, List<Double>> performanceMap = new HashMap<>();
+        Map<GCType, List<Integer>> pausesMap = new HashMap<>();
         for (GCType gcType : gcTypes) {
             List<Double> measuredTimes = new ArrayList<>();
+            List<Integer> pauses = new ArrayList<>();
             double totalTime = 0.0;
+            int fullPauses = 0;
+            int minorPauses = 0;
             int noOfRuns = runs;
             int lastRunWithNoMallocFailure = 0;
             prematureProcessInterrupts.set(0);
@@ -295,9 +299,14 @@ public class GCPerfDriver {
                 noOfRuns = getNumOfRunsAndHandleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, process,
                         outErrFile);
                 totalTime = yieldRunTimes(erroneousRun, outFile, gcType, measuredTimes, totalTime, i);
+                fullPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[0];
+                minorPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[1];
+                pauses.add(fullPauses);
+                pauses.add(minorPauses);
             }
             avgRuns.put(gcType, totalTime / runs);
             performanceMap.put(gcType, measuredTimes);
+            pausesMap.put(gcType, pauses);
         }
         return performanceMap;
     }
@@ -588,6 +597,61 @@ public class GCPerfDriver {
                     gcNumPattern, "ms", true);
         }
         return totalTimeRounded;
+    }
+
+    private static int[] yieldNoOfPausesFromSource(List<String> parsedStrings, GCType gcType) {
+        int[] pauses = new int[2];
+        int totalPauses;
+        int fullPauses;
+        switch (gcType) {
+            case SERIAL, PARALLEL -> {
+                fullPauses = yieldNoOfPausesHelper(parsedStrings, false, "Pause Full", null) / 2;
+                totalPauses = yieldNoOfPausesHelper(parsedStrings, false, "Pause", null) / 2;
+                pauses[0] = fullPauses;
+                pauses[1] = totalPauses - fullPauses;
+                return pauses;
+            }
+            case G1, ZGC -> {
+                fullPauses = yieldNoOfPausesHelper(parsedStrings, false, "Pause Full", null) / 2;
+                totalPauses = yieldNoOfPausesHelper(parsedStrings, false, "[gc,start    ]", null);
+                pauses[0] = fullPauses;
+                pauses[1] = totalPauses - fullPauses;
+                return pauses;
+            }
+            case SHENANDOAH -> {
+                //TODO fullPauses
+                fullPauses = yieldNoOfPausesHelper(parsedStrings, false, "Pause Full", null);
+                totalPauses = yieldNoOfPausesHelper(parsedStrings, true, "Pause", "[gc,stats    ]");
+                pauses[0] = fullPauses;
+                pauses[1] = totalPauses - fullPauses;
+                return pauses;
+            }
+            default -> {
+                LOGGER.log(Level.SEVERE, "GCType N/A");
+                throw new IllegalArgumentException("Non-existent GC Type");
+            }
+        }
+    }
+
+    private static int yieldNoOfPausesHelper(List<String> parsedStrings, boolean filter, String regex1, String regex2) {
+        if(filter && regex2 == null) {
+            LOGGER.log(Level.SEVERE, "Second regex is missing");
+            throw new IllegalArgumentException("Second regex is missing");
+        }
+        int counter = 0;
+        for(String line : parsedStrings) {
+            if(!filter) {
+                if(line.contains(regex1)) {
+                    counter++;
+                }
+            }
+            else {
+                if(line.contains(regex1) && !line.contains(regex2)) {
+                    counter++;
+                }
+            }
+        }
+        return counter;
     }
 
     private static double calculateTotalTimeRounded(List<String> parsedStrings, Pattern pattern1, Pattern pattern2,

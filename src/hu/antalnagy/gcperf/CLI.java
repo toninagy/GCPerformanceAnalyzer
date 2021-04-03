@@ -87,7 +87,11 @@ public class CLI {
 
         public enum GCOptions {
             UnlockExperimental("-XX:+UnlockExperimentalVMOptions"),
-            VerboseGC("-verbose:gc");
+            VerboseGC("-verbose:gc"),
+            DisableExplicitGC("-XX:+DisableExplicitGC"),
+            ExplicitGCInvokesConcurrent("-XX:+ExplicitGCInvokesConcurrent"),
+            ExplicitGCInvokesConcurrentAndUnloadsClasses("-XX:+ExplicitGCInvokesConcurrentAndUnloadsClasses"),
+            MaxGCPauseTimeMillis("-XX:MaxGCPauseMillis="); //kind of not needed for ZGC and especially for Shenandoah
 
             private final String optionString;
 
