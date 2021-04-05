@@ -29,8 +29,10 @@ public class Analysis {
 
     private static final Pattern gcCpuPattern = Pattern.compile("gc,cpu");
     private static final Pattern gcPhasesPattern = Pattern.compile("gc,phases");
+    private static final Pattern gcPausePattern = Pattern.compile("Pause");
     private static final Pattern gcWhiteSpacePattern = Pattern.compile("gc\\s");
     private static final Pattern gcNumPattern = Pattern.compile("GC\\([0-9]+\\)");
+    private static final Pattern gcNumAndPausePattern = Pattern.compile("GC\\([0-9]+\\)\sPause");
 
     private static final Object mainLock = new Object();
     private static final Object watcherLock = new Object();
@@ -39,7 +41,8 @@ public class Analysis {
 
     private final List<GCType> gcTypes;
     private final Map<GCType, Double> avgRuns = new HashMap<>();
-    private final Map<GCType, List<Double>> runtimesMap = new HashMap<>();
+    private final Map<GCType, List<Double>> gcRuntimesMap = new HashMap<>();
+    private final Map<GCType, List<Double>> throughputMap = new HashMap<>();
     private final Map<GCType, List<Integer>> pausesMap = new HashMap<>();
 
     private static boolean isShenandoahOnly;
@@ -60,8 +63,12 @@ public class Analysis {
         return new HashMap<> (avgRuns);
     }
 
-    public Map<GCType, List<Double>> getRuntimesMap() {
-        return new HashMap<>(runtimesMap);
+    public Map<GCType, List<Double>> getGcRuntimesMap() {
+        return new HashMap<>(gcRuntimesMap);
+    }
+
+    public Map<GCType, List<Double>> getThroughputMap() {
+        return throughputMap;
     }
 
     public Map<GCType, List<Integer>> getPausesMap() {
@@ -76,6 +83,8 @@ public class Analysis {
                                   int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
         for (GCType gcType : gcTypes) {
             List<Double> measuredTimes = new ArrayList<>();
+            List<Double> measuredSTWTimes = new ArrayList<>();
+            List<Double> throughputs = new ArrayList<>();
             List<Integer> pauses = new ArrayList<>();
             double totalTime = 0.0;
             int noOfRuns = runs;
@@ -125,9 +134,12 @@ public class Analysis {
                 noOfRuns = getNumOfRunsAndHandleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, process,
                         outErrFile);
                 if(!erroneousRun.get()) {
-                    totalTime = yieldRunTimes(outFile, gcType, measuredTimes, totalTime, i);
+                    totalTime = yieldGCRunTimes(outFile, gcType, measuredTimes, measuredSTWTimes, totalTime, i);
                     int fullPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[0];
                     int minorPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[1];
+                    double lastThreadExitTime = yieldLastThreadExitFromSource(yieldOutputStringsFromFile(outFile));
+                    double throughput = calculateThroughput(lastThreadExitTime, measuredSTWTimes.get(measuredSTWTimes.size()-1));
+                    throughputs.add(throughput);
                     pauses.add(fullPauses);
                     pauses.add(minorPauses);
                 }
@@ -136,10 +148,16 @@ public class Analysis {
                 }
             }
             avgRuns.put(gcType, totalTime / runs);
-            runtimesMap.put(gcType, measuredTimes);
+            gcRuntimesMap.put(gcType, measuredTimes);
+            throughputMap.put(gcType, throughputs);
             pausesMap.put(gcType, pauses);
         }
         setSuggestedGC();
+    }
+
+    private double calculateThroughput(double lastThreadExitTime, double gcTime) {
+        double gcTimeInPercentage = gcTime*100.0/lastThreadExitTime;
+        return 100.0 - gcTimeInPercentage;
     }
 
     private static int[] calculateHeapSize(int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize, int maxHeapIncrementSize,
@@ -194,14 +212,14 @@ public class Analysis {
                     .withXlogOptions(CLI.VMOptions.XlogOptions.GCStart, CLI.VMOptions.XlogOptions.GCHeap,
                             CLI.VMOptions.XlogOptions.GCMetaspace, CLI.VMOptions.XlogOptions.GCCpu,
                             CLI.VMOptions.XlogOptions.GCHeapExit, CLI.VMOptions.XlogOptions.GCHeapCoops, CLI.VMOptions.XlogOptions.GCPhases,
-                            CLI.VMOptions.XlogOptions.GCPhasesStart);
+                            CLI.VMOptions.XlogOptions.GCPhasesStart, CLI.VMOptions.XlogOptions.OSThread);
 
             case G1 -> cli.withVMOptions(CLI.VMOptions.Xms, CLI.VMOptions.Xmx)
                     .withGCOptions(CLI.VMOptions.GCOptions.VerboseGC)
                     .withXlogOptions(CLI.VMOptions.XlogOptions.GCStart, CLI.VMOptions.XlogOptions.GCHeap, CLI.VMOptions.XlogOptions.GCMetaspace,
                             CLI.VMOptions.XlogOptions.GCCpu, CLI.VMOptions.XlogOptions.GCHeapExit, CLI.VMOptions.XlogOptions.GCHeapCoops,
                             CLI.VMOptions.XlogOptions.GCPhases, CLI.VMOptions.XlogOptions.GCPhasesStart, CLI.VMOptions.XlogOptions.GCTask,
-                            CLI.VMOptions.XlogOptions.GCCds);
+                            CLI.VMOptions.XlogOptions.GCCds, CLI.VMOptions.XlogOptions.OSThread);
 
             case ZGC -> cli.withVMOptions(CLI.VMOptions.Xms, CLI.VMOptions.Xmx)
                     .withGCOptions(CLI.VMOptions.GCOptions.VerboseGC, CLI.VMOptions.GCOptions.UnlockExperimental)
@@ -209,12 +227,14 @@ public class Analysis {
                             CLI.VMOptions.XlogOptions.GCCpu, CLI.VMOptions.XlogOptions.GCHeapExit, CLI.VMOptions.XlogOptions.GCHeapCoops,
                             CLI.VMOptions.XlogOptions.GCPhases, CLI.VMOptions.XlogOptions.GCPhasesStart, CLI.VMOptions.XlogOptions.GCInit,
                             CLI.VMOptions.XlogOptions.GCLoad, CLI.VMOptions.XlogOptions.GCMMU, CLI.VMOptions.XlogOptions.GCMarking,
-                            CLI.VMOptions.XlogOptions.GCReloc, CLI.VMOptions.XlogOptions.GCNMethod, CLI.VMOptions.XlogOptions.GCRef);
+                            CLI.VMOptions.XlogOptions.GCReloc, CLI.VMOptions.XlogOptions.GCNMethod, CLI.VMOptions.XlogOptions.GCRef,
+                            CLI.VMOptions.XlogOptions.OSThread);
 
             case SHENANDOAH -> cli.withVMOptions(CLI.VMOptions.Xms, CLI.VMOptions.Xmx)
                     .withGCOptions(CLI.VMOptions.GCOptions.VerboseGC, CLI.VMOptions.GCOptions.UnlockExperimental)
                     .withXlogOptions(CLI.VMOptions.XlogOptions.GC, CLI.VMOptions.XlogOptions.GCInit, CLI.VMOptions.XlogOptions.GCStats,
-                            CLI.VMOptions.XlogOptions.GCHeapExit, CLI.VMOptions.XlogOptions.GCMetaspace, CLI.VMOptions.XlogOptions.GCErgo);
+                            CLI.VMOptions.XlogOptions.GCHeapExit, CLI.VMOptions.XlogOptions.GCMetaspace, CLI.VMOptions.XlogOptions.GCErgo,
+                            CLI.VMOptions.XlogOptions.OSThread);
         }
         return cli;
     }
@@ -391,17 +411,35 @@ public class Analysis {
         return noOfRuns;
     }
 
-    private static double yieldRunTimes(File outFile, GCType gcType, List<Double> measuredTimes,
+    private static double yieldGCRunTimes(File outFile, GCType gcType, List<Double> measuredTimes, List<Double> measuredSTWTimes,
                                         double totalTime, int runNo) {
-        double time = yieldGCTimeFromSource(yieldOutputStringsFromFile(outFile), gcType);
+        List<String> parsedStrings = yieldOutputStringsFromFile(outFile);
+        double time = yieldGCTimeFromSource(parsedStrings, gcType);
         if (gcType == GCType.SHENANDOAH) {
             lastSuccessfulShenandoahRunTime = time;
         }
         measuredTimes.add(time);
+        if(gcType == GCType.SERIAL || gcType == GCType.PARALLEL || gcType == GCType.G1) {
+            measuredSTWTimes.add(time);
+        }
+        else {
+            measuredSTWTimes.add(yieldSTWTimeFromSource(parsedStrings, gcType));
+        }
         totalTime += time;
         LOGGER.log(Level.INFO, "Run no.: " + (runNo + 1) + " : time: " + time);
 
         return totalTime;
+    }
+
+    private static Double yieldSTWTimeFromSource(List<String> parsedStrings, GCType gcType) {
+        double totalTimeRounded = 0.0;
+        switch (gcType) {
+            case ZGC -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcPhasesPattern,
+                    gcPausePattern, "ms", true);
+            case SHENANDOAH -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcWhiteSpacePattern,
+                    gcNumAndPausePattern, "ms", true);
+        }
+        return totalTimeRounded;
     }
 
     private static double yieldGCTimeFromSource(List<String> parsedStrings, GCType gcType) {
@@ -429,7 +467,14 @@ public class Analysis {
                 pauses[1] = totalPauses - fullPauses;
                 return pauses;
             }
-            case G1, ZGC -> {
+            case G1 -> {
+                fullPauses = yieldNoOfPausesHelper(parsedStrings, false, "Pause Full", null) / 2;
+                totalPauses = yieldNoOfPausesHelper(parsedStrings, false, "[gc,start    ]", null);
+                pauses[0] = fullPauses;
+                pauses[1] = totalPauses - fullPauses;
+                return pauses;
+            }
+            case ZGC -> {
                 fullPauses = yieldNoOfPausesHelper(parsedStrings, false, "Pause Full", null) / 2;
                 totalPauses = yieldNoOfPausesHelper(parsedStrings, false, "[gc,start    ]", null);
                 pauses[0] = fullPauses;
@@ -486,6 +531,18 @@ public class Analysis {
             }
         }
         return 0;
+    }
+
+    private double yieldLastThreadExitFromSource(List<String> parsedStrings) {
+        double timeStamp = 0.0;
+        for(String line : parsedStrings) {
+            if(line.contains("Thread finished")) {
+                String[] split = line.split("\\[");
+                String timeStampString = split[1].substring(0, split[1].length()-2);
+                timeStamp = Double.parseDouble(timeStampString);
+            }
+        }
+        return timeStamp;
     }
 
     private static double calculateTotalTimeRounded(List<String> parsedStrings, Pattern pattern1, Pattern pattern2,

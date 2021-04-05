@@ -127,7 +127,8 @@ public class CLI {
             GCCds("-Xlog:gc+cds"),
             GCErgo("-Xlog:gc+ergo"),
             GCStats("-Xlog:gc+stats"),
-            Safepoint("-Xlog:safepoint");
+            Safepoint("-Xlog:safepoint"),
+            OSThread("-Xlog:os+thread");
 
             private final String optionString;
 

@@ -34,7 +34,7 @@ public class GCPerfDriver {
             list.add(GCType.G1);
             list.add(GCType.ZGC);
             list.add(GCType.SHENANDOAH);
-            launch(new File("App.class"), 2, 140, 300,
+            launch(new File("App.class"), 2, 200, 400,
                     50, 100, list, true);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
@@ -66,15 +66,16 @@ public class GCPerfDriver {
         Analysis analysis = new Analysis(mainClass, gcTypes);
         analysis.performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize,
                 startHeapIncrementSize, maxHeapIncrementSize);
-        var runtimesMap = analysis.getRuntimesMap();
+        var runtimesMap = analysis.getGcRuntimesMap();
         var avgRuntimesMap = analysis.getAvgRuns();
+        var throughputMap = analysis.getThroughputMap();
         var pauseTimesMap = analysis.getPausesMap();
         GCType suggestedGCType = analysis.getSuggestedGC();
         plotResults(runtimesMap);
         if(exportToCSV) {
             SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss");
             Date date = new Date(System.currentTimeMillis());
-            createCSVFile(runtimesMap, pauseTimesMap, "results-" + formatter.format(date) + ".csv");
+            createCSVFile(runtimesMap, throughputMap, pauseTimesMap, "results-" + formatter.format(date) + ".csv");
         }
         LOGGER.log(Level.INFO, "Suggested GC Type: " + suggestedGCType.name());
     }
@@ -99,7 +100,7 @@ public class GCPerfDriver {
             Optional<File> manifest = Arrays.stream(files).filter(f -> f.getName().contains("MANIFEST.MF")).findFirst();
             if(manifest.isEmpty()) {
                 LOGGER.log(Level.SEVERE, "MANIFEST.MF file missing");
-                throw new IllegalArgumentException("MANIFEST.MF file couldn't be found. Please check .jar file" +
+                throw new IllegalArgumentException("MANIFEST.MF file couldn't be found. Please check .jar file " +
                         "contents");
             }
             try (Scanner scanner = new Scanner(manifest.get())) {
@@ -162,17 +163,20 @@ public class GCPerfDriver {
         }
     }
 
-    private static void createCSVFile(Map<GCType, List<Double>> runtimesMap, Map<GCType, List<Integer>> pausesMap, String fileName) {
+    private static void createCSVFile(Map<GCType, List<Double>> runtimesMap, Map<GCType, List<Double>> throughputMap,
+                                      Map<GCType, List<Integer>> pausesMap, String fileName) {
         File outFile = new File(LOC_OUT_CSV_PATH + "/" + fileName);
         try (PrintWriter printWriter = new PrintWriter(outFile)) {
-            printWriter.write("GCType,RunNo,Runtime(sec),FullPauses,MinorPauses\n");
+            printWriter.write("GCType,RunNo,Runtime(sec),Throughput(%),FullPauses,MinorPauses\n");
             for (GCType gcType : gcTypes) {
                 List<Double> runs = runtimesMap.get(gcType);
+                List<Double> throughputs = throughputMap.get(gcType);
                 List<Integer> pauses = pausesMap.get(gcType);
                 StringBuilder stringBuilder = new StringBuilder();
                 for (int i = 0, j = 0; i < runs.size(); i++, j++) {
                     stringBuilder.append(gcType.name()).append(",").append(i + 1).append(",").append(runs.get(i)).append(",")
-                            .append(pauses.get(j)).append(",").append(pauses.get(++j)).append("\n");
+                            .append(throughputs.get(i)).append(",").append(pauses.get(j)).append(",")
+                            .append(pauses.get(++j)).append("\n");
                 }
                 printWriter.write(stringBuilder.toString());
             }
