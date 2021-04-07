@@ -35,7 +35,9 @@ public class GCPerfDriver {
             list.add(GCType.ZGC);
             list.add(GCType.SHENANDOAH);
             launch(new File("App.class"), 2, 200, 400,
-                    50, 100, list, true);
+                    50, 100, list, new Analysis.Metrics[]{Analysis.Metrics.BestGCRuntime,
+                    Analysis.Metrics.AvgGCRuntime, Analysis.Metrics.Throughput, Analysis.Metrics.Latency,
+                    Analysis.Metrics.MinorPauses, Analysis.Metrics.FullPauses}, true);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
@@ -58,26 +60,24 @@ public class GCPerfDriver {
      * @param exportToCSV Export to csv file
      */
     public static void launch(File file, int numOfRuns, int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize,
-                              int maxHeapIncrementSize, List<GCType> gcTypes, boolean exportToCSV) throws IOException,
-            PythonExecutionException, InterruptedException {
-
+                              int maxHeapIncrementSize, List<GCType> gcTypes, Analysis.Metrics[] metrics,
+                              boolean exportToCSV) throws IOException, PythonExecutionException, InterruptedException {
         GCPerfDriver.gcTypes = new ArrayList<>(gcTypes);
         extractBinariesAndSetMainClass(file);
         Analysis analysis = new Analysis(mainClass, gcTypes);
         analysis.performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize,
-                startHeapIncrementSize, maxHeapIncrementSize);
+                startHeapIncrementSize, maxHeapIncrementSize, metrics);
         var runtimesMap = analysis.getGcRuntimesMap();
-        var avgRuntimesMap = analysis.getAvgRuns();
         var throughputMap = analysis.getThroughputMap();
         var pauseTimesMap = analysis.getPausesMap();
-        GCType suggestedGCType = analysis.getSuggestedGC();
+        var leaderboard = analysis.getLeaderBoard();
+        leaderboard.forEach(record -> LOGGER.log(Level.INFO, leaderboard.indexOf(record) + 1 + ": " + record.name()));
         plotResults(runtimesMap);
         if(exportToCSV) {
             SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss");
             Date date = new Date(System.currentTimeMillis());
             createCSVFile(runtimesMap, throughputMap, pauseTimesMap, "results-" + formatter.format(date) + ".csv");
         }
-        LOGGER.log(Level.INFO, "Suggested GC Type: " + suggestedGCType.name());
     }
 
     private static void extractBinariesAndSetMainClass(File file) throws IOException, InterruptedException {
@@ -167,7 +167,7 @@ public class GCPerfDriver {
                                       Map<GCType, List<Integer>> pausesMap, String fileName) {
         File outFile = new File(LOC_OUT_CSV_PATH + "/" + fileName);
         try (PrintWriter printWriter = new PrintWriter(outFile)) {
-            printWriter.write("GCType,RunNo,Runtime(sec),Throughput(%),FullPauses,MinorPauses\n");
+            printWriter.write("GCType,RunNo,GCRuntime(sec),Throughput(%),FullPauses,MinorPauses\n");
             for (GCType gcType : gcTypes) {
                 List<Double> runs = runtimesMap.get(gcType);
                 List<Double> throughputs = throughputMap.get(gcType);
@@ -183,6 +183,9 @@ public class GCPerfDriver {
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
+        } catch (NullPointerException npe) {
+            LOGGER.log(Level.SEVERE, "NPE occurred, possibly empty maps provided");
+            npe.printStackTrace();
         }
     }
 
