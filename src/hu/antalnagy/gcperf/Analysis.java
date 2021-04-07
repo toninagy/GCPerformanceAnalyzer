@@ -44,18 +44,19 @@ public class Analysis {
     private static final Object watcherLock = new Object();
 
     private final String mainClass;
-
     private final List<GCType> gcTypes;
+    private final Metrics[] metrics;
+
     private final Map<GCType, Double> avgGCRuns = new HashMap<>();
     private final Map<GCType, List<Double>> gcRuntimesMap = new HashMap<>();
     private final Map<GCType, List<Double>> throughputMap = new HashMap<>();
     private final Map<GCType, List<Integer>> pausesMap = new HashMap<>();
 
-    private static boolean isShenandoahOnly;
-    private static final AtomicInteger prematureProcessInterrupts = new AtomicInteger(0);
-    private static final AtomicInteger prematureRunIncrement = new AtomicInteger(0);
-    private static final AtomicBoolean memoryAllocationFailureOnLastRun = new AtomicBoolean(false);
-    private static double lastSuccessfulShenandoahRunTime = 0;
+    private final boolean isShenandoahOnly;
+    private final AtomicInteger prematureProcessInterrupts = new AtomicInteger(0);
+    private final AtomicInteger prematureRunIncrement = new AtomicInteger(0);
+    private final AtomicBoolean memoryAllocationFailureOnLastRun = new AtomicBoolean(false);
+    private double lastSuccessfulShenandoahRunTime = 0.0;
 
     private final List<GCType> leaderboard = new LinkedList<>();
 
@@ -68,9 +69,10 @@ public class Analysis {
         FullPauses
     }
 
-    public Analysis(String mainClass, List<GCType> gcTypes) {
+    public Analysis(String mainClass, List<GCType> gcTypes, Metrics[] metrics) {
         this.mainClass = mainClass;
         this.gcTypes = new ArrayList<>(gcTypes);
+        this.metrics = List.of(metrics).toArray(Metrics[]::new);
         isShenandoahOnly = gcTypes.contains(GCType.SHENANDOAH) && gcTypes.size() == 1;
     }
 
@@ -90,12 +92,12 @@ public class Analysis {
         return new HashMap<>(pausesMap);
     }
 
-    public List<GCType> getLeaderBoard() {
+    public List<GCType> getLeaderboard() {
         return leaderboard;
     }
 
     public void performGCAnalysis(int runs, int initStartHeapSize, int initMaxHeapSize,
-                                  int startHeapIncrementSize, int maxHeapIncrementSize, Metrics... metrics) throws IOException {
+                                  int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
         for (GCType gcType : gcTypes) {
             List<Double> measuredTimes = new ArrayList<>();
             List<Double> measuredSTWTimes = new ArrayList<>();
@@ -175,7 +177,7 @@ public class Analysis {
         return 100.0 - gcTimeInPercentage;
     }
 
-    private static int[] calculateHeapSize(int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize, int maxHeapIncrementSize,
+    private int[] calculateHeapSize(int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize, int maxHeapIncrementSize,
                                            int i, int prematureProcessInterrupts) {
         int[] xm = new int[2];
         xm[0] = Integer.min(initStartHeapSize + ((i - prematureProcessInterrupts) * startHeapIncrementSize), MAX_INIT_HEAP_SIZE);
@@ -209,7 +211,7 @@ public class Analysis {
      * @param maxHeapSize Maximum heap size in MB
      * @return CLI
      */
-    private static CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
+    private CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
         if (startHeapSize < 1) {
             LOGGER.log(Level.SEVERE, "Invalid argument for initial heap size!");
             throw new IllegalArgumentException("Please provide an initial heap size of at least 1MB!");
@@ -254,7 +256,7 @@ public class Analysis {
         return cli;
     }
 
-    private static File createOutFile(boolean isErrFile) {
+    private File createOutFile(boolean isErrFile) {
         File outFile;
         if (!isErrFile) {
             outFile = new File(LOC_OUT_PATH + "/out" + ++OUT_FILE_NO + ".txt");
@@ -338,7 +340,7 @@ public class Analysis {
         watcherThread.start();
     }
 
-    private static void waitForMainLock() {
+    private void waitForMainLock() {
         synchronized (mainLock) {
             try {
                 mainLock.wait();
@@ -398,7 +400,7 @@ public class Analysis {
         }
     }
 
-    private static int getNumOfRunsAndHandleUnexpectedThreadEvents(int noOfRuns, final AtomicBoolean processSuspended,
+    private int getNumOfRunsAndHandleUnexpectedThreadEvents(int noOfRuns, final AtomicBoolean processSuspended,
                                                                    final AtomicBoolean erroneousRun, final AtomicReference<Process> process,
                                                                    File outErrFile) throws FileNotFoundException {
         if (processSuspended.get()) {
@@ -426,7 +428,7 @@ public class Analysis {
         return noOfRuns;
     }
 
-    private static double yieldGCRunTimes(File outFile, GCType gcType, List<Double> measuredTimes, List<Double> measuredSTWTimes,
+    private double yieldGCRunTimes(File outFile, GCType gcType, List<Double> measuredTimes, List<Double> measuredSTWTimes,
                                         double totalTime, int runNo) {
         List<String> parsedStrings = yieldOutputStringsFromFile(outFile);
         double time = yieldGCTimeFromSource(parsedStrings, gcType);
@@ -446,7 +448,7 @@ public class Analysis {
         return totalTime;
     }
 
-    private static Double yieldSTWTimeFromSource(List<String> parsedStrings, GCType gcType) {
+    private Double yieldSTWTimeFromSource(List<String> parsedStrings, GCType gcType) {
         double totalTimeRounded = 0.0;
         switch (gcType) {
             case ZGC -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcPhasesPattern,
@@ -457,7 +459,7 @@ public class Analysis {
         return totalTimeRounded;
     }
 
-    private static double yieldGCTimeFromSource(List<String> parsedStrings, GCType gcType) {
+    private double yieldGCTimeFromSource(List<String> parsedStrings, GCType gcType) {
         double totalTimeRounded = 0.0;
         switch (gcType) {
             case SERIAL, PARALLEL -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcCpuPattern,
@@ -472,7 +474,7 @@ public class Analysis {
         return totalTimeRounded;
     }
 
-    private static int[] yieldNoOfPausesFromSource(List<String> parsedStrings, GCType gcType) {
+    private int[] yieldNoOfPausesFromSource(List<String> parsedStrings, GCType gcType) {
         int[] pauses = new int[2];
         switch (gcType) {
             case SERIAL, PARALLEL -> {
@@ -499,7 +501,7 @@ public class Analysis {
         }
     }
 
-    private static int[] yieldNoOfPauses(List<String> parsedStrings, GCType gcType) {
+    private int[] yieldNoOfPauses(List<String> parsedStrings, GCType gcType) {
         int[] pauses = new int[2];
         int fullPauses = yieldNoOfPausesHelper(parsedStrings, false, pauseFullPattern, null) / 2;
         int totalPauses = gcType == GCType.G1 ?
@@ -510,7 +512,7 @@ public class Analysis {
         return pauses;
     }
 
-    private static int yieldNoOfPausesHelper(List<String> parsedStrings, boolean filter, Pattern regex1, Pattern regex2) {
+    private int yieldNoOfPausesHelper(List<String> parsedStrings, boolean filter, Pattern regex1, Pattern regex2) {
         if(filter && regex2 == null) {
             LOGGER.log(Level.SEVERE, "Second regex is missing");
             throw new IllegalArgumentException("Second regex is missing");
@@ -534,7 +536,7 @@ public class Analysis {
         return counter;
     }
 
-    private static int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) { //from statistics
+    private int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) { //from statistics
         for(String line : parsedStrings) {
             if(line.contains("Full GCs") && line.contains(gcStatsPattern.toString())) {
                 String[] split = line.split(" ");
@@ -563,7 +565,7 @@ public class Analysis {
         return timeStamp;
     }
 
-    private static double calculateTotalTimeRounded(List<String> parsedStrings, Pattern pattern1, Pattern pattern2,
+    private double calculateTotalTimeRounded(List<String> parsedStrings, Pattern pattern1, Pattern pattern2,
                                                     String separator, boolean inMs) {
         List<String> realTimeStringList = new ArrayList<>();
         for (String line : parsedStrings) {
@@ -594,7 +596,7 @@ public class Analysis {
         return totalTimeRoundedInMs / 1000;
     }
 
-    private static List<String> yieldOutputStringsFromFile(File file) {
+    private List<String> yieldOutputStringsFromFile(File file) {
         List<String> outputStrings = new ArrayList<>();
         try (BufferedReader bufferedReader = new BufferedReader(new FileReader(file), BUFFER_SIZE)) {
             String line;
@@ -625,7 +627,8 @@ public class Analysis {
             leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " " + i));
         }
         if(metricsList.contains(Metrics.AvgGCRuntime)) {
-            List<Map.Entry<GCType, Double>> sortedList = avgGCRuns.entrySet().stream().sorted(Map.Entry.comparingByValue()).collect(Collectors.toList());
+            List<Map.Entry<GCType, Double>> sortedList = avgGCRuns.entrySet().stream().sorted(Map.Entry.comparingByValue())
+                    .collect(Collectors.toList());
             sortedList.forEach(entry -> {
                 GCType key = entry.getKey();
                 int value = sortedList.size() - sortedList.indexOf(entry); //best is lowest
@@ -638,7 +641,6 @@ public class Analysis {
             List<Map.Entry<GCType, List<Double>>> sortedList = throughputMap.entrySet().stream()
                     .sorted(Comparator.comparing(e -> e.getValue().stream().max(Double::compareTo).orElse(0.0)))
                     .collect(Collectors.toList());
-
             sortedList.forEach(entry -> {
                 GCType key = entry.getKey();
                 int value = sortedList.indexOf(entry) + 1; //best is highest
@@ -674,9 +676,7 @@ public class Analysis {
                         var minorPauses = Stream.iterate(1, i -> i + 2).limit(values.size() / 2)
                                 .map(values::get).collect(Collectors.toList());
                         return minorPauses.stream().min(Integer::compareTo).orElse(Integer.MAX_VALUE);
-                    }))
-                    .collect(Collectors.toList());
-
+                    })).collect(Collectors.toList());
             sortedList.forEach(entry -> {
                 GCType key = entry.getKey();
                 int value = sortedList.size() - sortedList.indexOf(entry); //best is lowest
@@ -692,9 +692,7 @@ public class Analysis {
                         var fullPauses = Stream.iterate(0, i -> i + 2).limit(values.size() / 2)
                                 .map(values::get).collect(Collectors.toList());
                         return fullPauses.stream().min(Integer::compareTo).orElse(Integer.MAX_VALUE);
-                    }))
-                    .collect(Collectors.toList());
-
+                    })).collect(Collectors.toList());
             sortedList.forEach(entry -> {
                 GCType key = entry.getKey();
                 int value = sortedList.size() - sortedList.indexOf(entry); //best is lowest

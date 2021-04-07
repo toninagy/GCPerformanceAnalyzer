@@ -64,13 +64,13 @@ public class GCPerfDriver {
                               boolean exportToCSV) throws IOException, PythonExecutionException, InterruptedException {
         GCPerfDriver.gcTypes = new ArrayList<>(gcTypes);
         extractBinariesAndSetMainClass(file);
-        Analysis analysis = new Analysis(mainClass, gcTypes);
+        Analysis analysis = new Analysis(mainClass, gcTypes, metrics);
         analysis.performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize,
-                startHeapIncrementSize, maxHeapIncrementSize, metrics);
+                startHeapIncrementSize, maxHeapIncrementSize);
         var runtimesMap = analysis.getGcRuntimesMap();
         var throughputMap = analysis.getThroughputMap();
         var pauseTimesMap = analysis.getPausesMap();
-        var leaderboard = analysis.getLeaderBoard();
+        var leaderboard = analysis.getLeaderboard();
         leaderboard.forEach(record -> LOGGER.log(Level.INFO, leaderboard.indexOf(record) + 1 + ": " + record.name()));
         plotResults(runtimesMap);
         if(exportToCSV) {
