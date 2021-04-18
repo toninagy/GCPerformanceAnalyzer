@@ -49,7 +49,7 @@ public class Analysis {
 
     private final Map<GCType, Double> avgGCRuns = new HashMap<>();
     private final Map<GCType, List<Double>> gcRuntimesMap = new HashMap<>();
-    private final Map<GCType, List<Double>> throughputMap = new HashMap<>();
+    private final Map<GCType, List<Double>> throughputsMap = new HashMap<>();
     private final Map<GCType, List<Integer>> pausesMap = new HashMap<>();
 
     private final boolean isShenandoahOnly;
@@ -84,8 +84,8 @@ public class Analysis {
         return new HashMap<>(gcRuntimesMap);
     }
 
-    public Map<GCType, List<Double>> getThroughputMap() {
-        return throughputMap;
+    public Map<GCType, List<Double>> getThroughputsMap() {
+        return throughputsMap;
     }
 
     public Map<GCType, List<Integer>> getPausesMap() {
@@ -166,7 +166,7 @@ public class Analysis {
             }
             avgGCRuns.put(gcType, totalTime / runs);
             gcRuntimesMap.put(gcType, measuredTimes);
-            throughputMap.put(gcType, throughputs);
+            throughputsMap.put(gcType, throughputs);
             pausesMap.put(gcType, pauses);
         }
         setLeaderboard(metrics);
@@ -638,7 +638,7 @@ public class Analysis {
             leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " " + i));
         }
         if(metricsList.contains(Metrics.Throughput)) {
-            List<Map.Entry<GCType, List<Double>>> sortedList = throughputMap.entrySet().stream()
+            List<Map.Entry<GCType, List<Double>>> sortedList = throughputsMap.entrySet().stream()
                     .sorted(Comparator.comparing(e -> e.getValue().stream().max(Double::compareTo).orElse(0.0)))
                     .collect(Collectors.toList());
             sortedList.forEach(entry -> {

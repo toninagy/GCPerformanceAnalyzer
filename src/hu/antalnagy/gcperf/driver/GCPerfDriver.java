@@ -29,8 +29,8 @@ public class GCPerfDriver {
     public static void main(String[] args) {
         try {
             var list = new ArrayList<GCType>();
-            list.add(GCType.SERIAL);
-            list.add(GCType.PARALLEL);
+//            list.add(GCType.SERIAL);
+//            list.add(GCType.PARALLEL);
             list.add(GCType.G1);
             list.add(GCType.ZGC);
             list.add(GCType.SHENANDOAH);
@@ -68,15 +68,16 @@ public class GCPerfDriver {
         analysis.performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize,
                 startHeapIncrementSize, maxHeapIncrementSize);
         var runtimesMap = analysis.getGcRuntimesMap();
-        var throughputMap = analysis.getThroughputMap();
-        var pauseTimesMap = analysis.getPausesMap();
+        var avgRuntimesMap = analysis.getAvgGCRuns();
+        var throughputsMap = analysis.getThroughputsMap();
+        var pausesMap = analysis.getPausesMap();
         var leaderboard = analysis.getLeaderboard();
         leaderboard.forEach(record -> LOGGER.log(Level.INFO, leaderboard.indexOf(record) + 1 + ": " + record.name()));
-        plotResults(runtimesMap);
+        plotResults(runtimesMap, avgRuntimesMap, throughputsMap, pausesMap);
         if(exportToCSV) {
             SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss");
             Date date = new Date(System.currentTimeMillis());
-            createCSVFile(runtimesMap, throughputMap, pauseTimesMap, "results-" + formatter.format(date) + ".csv");
+            createCSVFile(runtimesMap, throughputsMap, pausesMap, "results-" + formatter.format(date) + ".csv");
         }
     }
 
@@ -189,18 +190,12 @@ public class GCPerfDriver {
         }
     }
 
-    private static void plotResults(Map<GCType, List<Double>> measurements) throws IOException, PythonExecutionException {
-        GCPerfPlot gcPerfPlot = new GCPerfPlot(GCType.SERIAL, new ArrayList<>());
-        for (Map.Entry<GCType, List<Double>> entry : measurements.entrySet()) {
-            if(!entry.getValue().isEmpty()) {
-                gcPerfPlot.setGcType(entry.getKey());
-                gcPerfPlot.setMeasurements(entry.getValue());
-                gcPerfPlot.plotMeasurements();
-            }
-            else {
-                LOGGER.log(Level.WARNING, "Empty values for GC Type: " + entry.getKey());
-            }
-        }
+    private static void plotResults(Map<GCType, List<Double>> runtimesMap,
+                                    Map<GCType, Double> avgRuntimesMap, Map<GCType, List<Double>> throughputsMap,
+                                    Map<GCType, List<Integer>> pausesMap) throws IOException, PythonExecutionException {
+        GCPerfPlot gcPerfPlot = new GCPerfPlot(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap, pausesMap);
+        gcPerfPlot.plotRuntimes();
+        gcPerfPlot.plotThroughputs();
+        gcPerfPlot.plotAvgRuntimes();
     }
-
 }
