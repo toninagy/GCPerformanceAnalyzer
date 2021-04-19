@@ -46,6 +46,7 @@ public class Analysis {
     private final String mainClass;
     private final List<GCType> gcTypes;
     private final Metrics[] metrics;
+    private final Progress progress;
 
     private final Map<GCType, Double> avgGCRuns = new HashMap<>();
     private final Map<GCType, List<Double>> gcRuntimesMap = new HashMap<>();
@@ -69,11 +70,49 @@ public class Analysis {
         FullPauses
     }
 
+    public static class Progress {
+        private final LinkedHashMap<Integer, String> progressMap = new LinkedHashMap<>();
+        boolean failed = false;
+        boolean done = false;
+        int progressLevel = 1;
+
+        private Progress(GCType... gcTypes) {
+            int i = 1;
+            progressMap.put(i++, "Setting up analysis environment ...");
+            for(GCType gcType : gcTypes) {
+                progressMap.put(i++, "Running analysis on GC Type: " + gcType.name() + " ...");
+            }
+            progressMap.put(i, "Finishing analysis and calculating results ...");
+        }
+
+        //return progressLevel in percentage points
+        public double getProgressLevel() {
+            return progressLevel / ((double) progressMap.size());
+        }
+
+        public String getProgressMessage() {
+            return progressMap.get(progressLevel);
+        }
+
+        public boolean isFailed() {
+            return failed;
+        }
+
+        public boolean isDone() {
+            return done;
+        }
+    }
+
     public Analysis(String mainClass, List<GCType> gcTypes, Metrics[] metrics) {
         this.mainClass = mainClass;
         this.gcTypes = new ArrayList<>(gcTypes);
         this.metrics = List.of(metrics).toArray(Metrics[]::new);
+        progress = new Progress(gcTypes.toArray(GCType[]::new));
         isShenandoahOnly = gcTypes.contains(GCType.SHENANDOAH) && gcTypes.size() == 1;
+    }
+
+    public Progress getProgress() {
+        return progress;
     }
 
     public Map<GCType, Double> getAvgGCRuns() {
@@ -98,6 +137,7 @@ public class Analysis {
 
     public void performGCAnalysis(int runs, int initStartHeapSize, int initMaxHeapSize,
                                   int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
+        waitABit();
         for (GCType gcType : gcTypes) {
             List<Double> measuredTimes = new ArrayList<>();
             List<Double> measuredSTWTimes = new ArrayList<>();
@@ -108,6 +148,7 @@ public class Analysis {
             int lastRunWithNoMallocFailure = 0;
             prematureProcessInterrupts.set(0);
             prematureRunIncrement.set(0);
+            progress.progressLevel++;
             LOGGER.log(Level.INFO, "Initializing run with GC Type: " + gcType.name());
             LOGGER.log(Level.INFO, "Expected no. of runs: " + runs);
             for (int i = 0; i < noOfRuns; i++) {
@@ -115,6 +156,7 @@ public class Analysis {
                     LOGGER.log(Level.SEVERE, "Analysis suspended for GC Type: " + gcType.name() +
                             "\nReason: 10 consecutive failed runs\n" +
                             "Possible problems include too small general heap size or too small heap size increments");
+                    progress.failed = true;
                     break;
                 }
                 int[] xm = calculateHeapSize(initStartHeapSize, initMaxHeapSize, startHeapIncrementSize, maxHeapIncrementSize,
@@ -169,7 +211,15 @@ public class Analysis {
             throughputsMap.put(gcType, throughputs);
             pausesMap.put(gcType, pauses);
         }
+        progress.progressLevel++;
         setLeaderboard(metrics);
+        progress.done = true;
+    }
+
+    private void waitABit() { //so that "setting things up" message is visible to humans too
+        try {
+            Thread.sleep(700);
+        } catch (InterruptedException ignored) {}
     }
 
     private double calculateThroughput(double lastThreadExitTime, double gcTime) {
@@ -214,10 +264,12 @@ public class Analysis {
     private CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
         if (startHeapSize < 1) {
             LOGGER.log(Level.SEVERE, "Invalid argument for initial heap size!");
+            progress.failed = true;
             throw new IllegalArgumentException("Please provide an initial heap size of at least 1MB!");
         }
         if (maxHeapSize < 16) {
             LOGGER.log(Level.SEVERE, "Invalid argument for maximum heap size!");
+            progress.failed = true;
             throw new IllegalArgumentException("Please provide a maximum heap size of at least 16MB!");
         }
         CLI.VMOptions.Xms.setSize(startHeapSize);
@@ -282,6 +334,7 @@ public class Analysis {
                 }
             } catch (IOException ex) {
                 LOGGER.log(Level.SEVERE, "IO exception occurred");
+                progress.failed = true;
                 ex.printStackTrace();
             } catch (InterruptedException ex) {
                 LOGGER.log(Level.WARNING, "Java runtime process " + process.get().pid() + " timed out/interrupted");
@@ -334,6 +387,7 @@ public class Analysis {
                 }
             } catch (InterruptedException ex) {
                 LOGGER.log(Level.SEVERE, Thread.currentThread().getName() + " interrupted");
+                progress.failed = true;
                 ex.printStackTrace();
             }
         });
@@ -346,6 +400,7 @@ public class Analysis {
                 mainLock.wait();
             } catch (InterruptedException ex) {
                 LOGGER.log(Level.SEVERE, Thread.currentThread().getName() + " interrupted");
+                progress.failed = true;
                 ex.printStackTrace();
             }
         }
@@ -362,6 +417,7 @@ public class Analysis {
             }
         } catch (FileNotFoundException e) {
             LOGGER.log(Level.SEVERE, "Output file not found");
+            progress.failed = true;
             e.printStackTrace();
         }
         int continuousHandleAllocationCount = 0;
@@ -420,6 +476,7 @@ public class Analysis {
             }
             if (!outOfMemoryError) {
                 LOGGER.log(Level.SEVERE, "Unknown error occurred, ending analysis");
+                progress.failed = true;
                 throw new IllegalArgumentException("Unknown error occurred during application run. " +
                         "Please verify the integrity of the .class file or check the error output for more details");
             }
@@ -496,6 +553,7 @@ public class Analysis {
             }
             default -> {
                 LOGGER.log(Level.SEVERE, "GCType N/A");
+                progress.failed = true;
                 throw new IllegalArgumentException("Non-existent GC Type");
             }
         }
@@ -515,6 +573,7 @@ public class Analysis {
     private int yieldNoOfPausesHelper(List<String> parsedStrings, boolean filter, Pattern regex1, Pattern regex2) {
         if(filter && regex2 == null) {
             LOGGER.log(Level.SEVERE, "Second regex is missing");
+            progress.failed = true;
             throw new IllegalArgumentException("Second regex is missing");
         }
         int counter = 0;
