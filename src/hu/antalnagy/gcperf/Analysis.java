@@ -135,6 +135,10 @@ public class Analysis {
         return leaderboard;
     }
 
+    public static Logger getLOGGER() {
+        return LOGGER;
+    }
+
     public void performGCAnalysis(int runs, int initStartHeapSize, int initMaxHeapSize,
                                   int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
         waitABit();

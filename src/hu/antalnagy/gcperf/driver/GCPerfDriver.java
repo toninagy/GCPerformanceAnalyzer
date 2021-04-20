@@ -11,11 +11,14 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.logging.FileHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
 
 public class GCPerfDriver {
     private static final Path LOC_PATH = Paths.get("").toAbsolutePath();
+    private static final Path LOC_LOG_PATH = Paths.get(LOC_PATH + "/log");
     private static final Path LOC_OUT_PATH = Paths.get(LOC_PATH + "/res/out");
     private static final Path LOC_OUT_ERR_PATH = Paths.get(LOC_PATH + "/res/outErr").toAbsolutePath();
     private static final Path LOC_OUT_BIN_PATH = Paths.get(LOC_PATH + "/bin").toAbsolutePath();
@@ -28,16 +31,16 @@ public class GCPerfDriver {
 
     public static void main(String[] args) {
         var list = new ArrayList<GCType>();
-//            list.add(GCType.SERIAL);
-//            list.add(GCType.PARALLEL);
+            list.add(GCType.SERIAL);
+            list.add(GCType.PARALLEL);
         list.add(GCType.G1);
         list.add(GCType.ZGC);
         list.add(GCType.SHENANDOAH);
         GCPerfDriver gcPerfDriver = null;
         try {
             gcPerfDriver = new GCPerfDriver();
-            gcPerfDriver.launch(new File("App.class"), 2, 200, 400,
-                    50, 100, list, new Analysis.Metrics[]{Analysis.Metrics.BestGCRuntime,
+            gcPerfDriver.launch(new File("App.class"), 2, 223, 300,
+                    40, 50, list, new Analysis.Metrics[]{Analysis.Metrics.BestGCRuntime,
                             Analysis.Metrics.AvgGCRuntime, Analysis.Metrics.Throughput, Analysis.Metrics.Latency,
                             Analysis.Metrics.MinorPauses, Analysis.Metrics.FullPauses}, true);
         } catch (IOException ex) {
@@ -57,6 +60,14 @@ public class GCPerfDriver {
         return analysis.getProgress();
     }
 
+    public List<GCType> getLeaderboard() {
+        return new LinkedList<>(analysis.getLeaderboard());
+    }
+
+    public Logger getAnalysisLogger() {
+        return Analysis.getLOGGER();
+    }
+
     /***
      * @param file .class file or .jar file
      * @param initStartHeapSize Start heap size in MB
@@ -69,10 +80,15 @@ public class GCPerfDriver {
     public void launch(File file, int numOfRuns, int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize,
                        int maxHeapIncrementSize, List<GCType> gcTypes, Analysis.Metrics[] metrics,
                        boolean exportToCSV) throws IOException, PythonExecutionException, InterruptedException {
-        gcTypes = new ArrayList<>(gcTypes);
+        this.gcTypes = new ArrayList<>(gcTypes);
         try {
             extractBinariesAndSetMainClass(file);
             analysis = new Analysis(mainClass, gcTypes, metrics);
+            FileHandler fileHandler = new FileHandler(LOC_LOG_PATH.toString());
+            SimpleFormatter formatter = new SimpleFormatter();
+            fileHandler.setFormatter(formatter);
+            getAnalysisLogger().addHandler(fileHandler);
+            LOGGER.addHandler(fileHandler);
             analysis.performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize,
                     startHeapIncrementSize, maxHeapIncrementSize);
         } catch (IOException ex) {
@@ -92,7 +108,7 @@ public class GCPerfDriver {
             plotResults(runtimesMap, avgRuntimesMap, throughputsMap, pausesMap);
         } catch (PythonExecutionException ex) {
             LOGGER.log(Level.SEVERE, "PythonExecutionException occurred");
-            throw new InterruptedException(ex.getMessage());
+            throw new PythonExecutionException(ex.getMessage());
         }
         if (exportToCSV) {
             SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss");
@@ -211,7 +227,7 @@ public class GCPerfDriver {
     private void plotResults(Map<GCType, List<Double>> runtimesMap,
                              Map<GCType, Double> avgRuntimesMap, Map<GCType, List<Double>> throughputsMap,
                              Map<GCType, List<Integer>> pausesMap) throws IOException, PythonExecutionException {
-        GCPerfPlot gcPerfPlot = new GCPerfPlot(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap, pausesMap);
+        GCPerfPlot gcPerfPlot = new GCPerfPlot(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap, pausesMap); //todo with setters
         gcPerfPlot.plotRuntimes();
         gcPerfPlot.plotThroughputs();
         gcPerfPlot.plotAvgRuntimes();
