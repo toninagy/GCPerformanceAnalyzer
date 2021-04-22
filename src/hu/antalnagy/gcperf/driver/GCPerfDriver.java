@@ -28,6 +28,7 @@ public class GCPerfDriver {
     private String mainClass;
     private List<GCType> gcTypes;
     private Analysis analysis;
+    private List<String> resultMetrics;
 
     public static void main(String[] args) {
         var list = new ArrayList<GCType>();
@@ -36,7 +37,7 @@ public class GCPerfDriver {
         list.add(GCType.G1);
         list.add(GCType.ZGC);
         list.add(GCType.SHENANDOAH);
-        GCPerfDriver gcPerfDriver = null;
+        GCPerfDriver gcPerfDriver;
         try {
             gcPerfDriver = new GCPerfDriver();
             gcPerfDriver.launch(new File("App.class"), 2, 223, 300,
@@ -53,11 +54,14 @@ public class GCPerfDriver {
             LOGGER.log(Level.SEVERE, "Interrupted thread");
             ex.printStackTrace();
         }
-        gcPerfDriver.getProgress().getProgressMessage();
     }
 
     public Analysis.Progress getProgress() {
         return analysis.getProgress();
+    }
+
+    public List<String> getResultMetrics() {
+        return new ArrayList<>(resultMetrics);
     }
 
     public List<GCType> getLeaderboard() {
@@ -81,6 +85,7 @@ public class GCPerfDriver {
                        int maxHeapIncrementSize, List<GCType> gcTypes, Analysis.Metrics[] metrics,
                        boolean exportToCSV) throws IOException, PythonExecutionException, InterruptedException {
         this.gcTypes = new ArrayList<>(gcTypes);
+        this.resultMetrics = new ArrayList<>();
         try {
             extractBinariesAndSetMainClass(file);
             analysis = new Analysis(mainClass, gcTypes, metrics);
@@ -104,6 +109,8 @@ public class GCPerfDriver {
         var pausesMap = analysis.getPausesMap();
         var leaderboard = analysis.getLeaderboard();
         leaderboard.forEach(record -> LOGGER.log(Level.INFO, leaderboard.indexOf(record) + 1 + ": " + record.name()));
+        resultsList(runtimesMap, throughputsMap, pausesMap);
+        analysis.getProgress().setDone(true);
         try {
             plotResults(runtimesMap, avgRuntimesMap, throughputsMap, pausesMap);
         } catch (PythonExecutionException ex) {
@@ -221,6 +228,22 @@ public class GCPerfDriver {
         } catch (NullPointerException npe) {
             LOGGER.log(Level.SEVERE, "NPE occurred, possibly empty maps provided");
             npe.printStackTrace();
+        }
+    }
+
+    private void resultsList(Map<GCType, List<Double>> runtimesMap, Map<GCType, List<Double>> throughputMap,
+                                        Map<GCType, List<Integer>> pausesMap) {
+        for (GCType gcType : gcTypes) {
+            List<Double> runs = runtimesMap.get(gcType);
+            List<Double> throughputs = throughputMap.get(gcType);
+            List<Integer> pauses = pausesMap.get(gcType);
+            StringBuilder stringBuilder = new StringBuilder();
+            for (int i = 0, j = 0; i < runs.size(); i++, j++) {
+                stringBuilder.append(gcType.name()).append(",").append(i + 1).append(",").append(runs.get(i)).append(",")
+                        .append(throughputs.get(i)).append(",").append(pauses.get(j)).append(",")
+                        .append(pauses.get(++j)).append("\n");
+            }
+            resultMetrics.addAll(Arrays.asList(stringBuilder.toString().split("\n")));
         }
     }
 

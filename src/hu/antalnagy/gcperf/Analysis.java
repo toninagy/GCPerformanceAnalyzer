@@ -101,6 +101,10 @@ public class Analysis {
         public boolean isDone() {
             return done;
         }
+
+        public void setDone(boolean done) {
+            this.done = done;
+        }
     }
 
     public Analysis(String mainClass, List<GCType> gcTypes, Metrics[] metrics) {
@@ -217,7 +221,6 @@ public class Analysis {
         }
         progress.progressLevel++;
         setLeaderboard(metrics);
-        progress.done = true;
     }
 
     private void waitABit() { //so that "setting things up" message is visible to humans too
@@ -479,7 +482,8 @@ public class Analysis {
                 }
             }
             if (!outOfMemoryError) {
-                LOGGER.log(Level.SEVERE, "Unknown error occurred, ending analysis");
+                LOGGER.log(Level.SEVERE, "Unknown error/exception occurred during application run, ending analysis. " +
+                        "Verify the integrity of the .class file or check the error output for more details");
                 progress.failed = true;
                 throw new IllegalArgumentException("Unknown error occurred during application run. " +
                         "Please verify the integrity of the .class file or check the error output for more details");
