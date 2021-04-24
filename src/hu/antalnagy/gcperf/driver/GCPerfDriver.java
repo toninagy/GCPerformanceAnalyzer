@@ -30,7 +30,7 @@ public class GCPerfDriver {
     private Analysis analysis;
     private List<String> resultMetrics;
 
-    public static void main(String[] args) {
+    public static void main(String[] args) { //todo remove main from deployment
         var list = new ArrayList<GCType>();
             list.add(GCType.SERIAL);
             list.add(GCType.PARALLEL);
@@ -211,16 +211,8 @@ public class GCPerfDriver {
         try (PrintWriter printWriter = new PrintWriter(outFile)) {
             printWriter.write("GCType,RunNo,GCRuntime(sec),Throughput(%),FullPauses,MinorPauses\n");
             for (GCType gcType : gcTypes) {
-                List<Double> runs = runtimesMap.get(gcType);
-                List<Double> throughputs = throughputMap.get(gcType);
-                List<Integer> pauses = pausesMap.get(gcType);
-                StringBuilder stringBuilder = new StringBuilder();
-                for (int i = 0, j = 0; i < runs.size(); i++, j++) {
-                    stringBuilder.append(gcType.name()).append(",").append(i + 1).append(",").append(runs.get(i)).append(",")
-                            .append(throughputs.get(i)).append(",").append(pauses.get(j)).append(",")
-                            .append(pauses.get(++j)).append("\n");
-                }
-                printWriter.write(stringBuilder.toString());
+                String result = buildResultString(runtimesMap, throughputMap, pausesMap, gcType);
+                printWriter.write(result);
             }
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
@@ -231,19 +223,25 @@ public class GCPerfDriver {
         }
     }
 
+    private String buildResultString(Map<GCType, List<Double>> runtimesMap, Map<GCType, List<Double>> throughputMap,
+                                           Map<GCType, List<Integer>> pausesMap, GCType gcType) {
+        List<Double> runs = runtimesMap.get(gcType);
+        List<Double> throughputs = throughputMap.get(gcType);
+        List<Integer> pauses = pausesMap.get(gcType);
+        StringBuilder stringBuilder = new StringBuilder();
+        for (int i = 0, j = 0; i < runs.size(); i++, j++) {
+            stringBuilder.append(gcType.name()).append(",").append(i + 1).append(",").append(runs.get(i)).append(",")
+                    .append(throughputs.get(i)).append(",").append(pauses.get(j)).append(",")
+                    .append(pauses.get(++j)).append("\n");
+        }
+        return stringBuilder.toString();
+    }
+
     private void resultsList(Map<GCType, List<Double>> runtimesMap, Map<GCType, List<Double>> throughputMap,
                                         Map<GCType, List<Integer>> pausesMap) {
         for (GCType gcType : gcTypes) {
-            List<Double> runs = runtimesMap.get(gcType);
-            List<Double> throughputs = throughputMap.get(gcType);
-            List<Integer> pauses = pausesMap.get(gcType);
-            StringBuilder stringBuilder = new StringBuilder();
-            for (int i = 0, j = 0; i < runs.size(); i++, j++) {
-                stringBuilder.append(gcType.name()).append(",").append(i + 1).append(",").append(runs.get(i)).append(",")
-                        .append(throughputs.get(i)).append(",").append(pauses.get(j)).append(",")
-                        .append(pauses.get(++j)).append("\n");
-            }
-            resultMetrics.addAll(Arrays.asList(stringBuilder.toString().split("\n")));
+            String result = buildResultString(runtimesMap, throughputMap, pausesMap, gcType);
+            resultMetrics.addAll(Arrays.asList(result.split("\n")));
         }
     }
 

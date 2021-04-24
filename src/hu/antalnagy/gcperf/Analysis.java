@@ -160,11 +160,12 @@ public class Analysis {
             LOGGER.log(Level.INFO, "Initializing run with GC Type: " + gcType.name());
             LOGGER.log(Level.INFO, "Expected no. of runs: " + runs);
             for (int i = 0; i < noOfRuns; i++) {
-                if(Math.abs(noOfRuns - lastRunWithNoMallocFailure) > 20) {
+                if(Math.abs(i - lastRunWithNoMallocFailure) > 20) {
                     LOGGER.log(Level.SEVERE, "Analysis suspended for GC Type: " + gcType.name() +
-                            "\nReason: 10 consecutive failed runs\n" +
+                            "\nReason: 20 consecutive failed runs\n" +
                             "Possible problems include too small general heap size or too small heap size increments");
                     progress.failed = true;
+                    waitABit();
                     break;
                 }
                 int[] xm = calculateHeapSize(initStartHeapSize, initMaxHeapSize, startHeapIncrementSize, maxHeapIncrementSize,
@@ -343,6 +344,7 @@ public class Analysis {
                 LOGGER.log(Level.SEVERE, "IO exception occurred");
                 progress.failed = true;
                 ex.printStackTrace();
+                throw new Error("IO exception occurred");
             } catch (InterruptedException ex) {
                 LOGGER.log(Level.WARNING, "Java runtime process " + process.get().pid() + " timed out/interrupted");
             }
@@ -396,6 +398,7 @@ public class Analysis {
                 LOGGER.log(Level.SEVERE, Thread.currentThread().getName() + " interrupted");
                 progress.failed = true;
                 ex.printStackTrace();
+                throw new RuntimeException(Thread.currentThread().getName() + " interrupted");
             }
         });
         watcherThread.start();
@@ -409,6 +412,7 @@ public class Analysis {
                 LOGGER.log(Level.SEVERE, Thread.currentThread().getName() + " interrupted");
                 progress.failed = true;
                 ex.printStackTrace();
+                throw new RuntimeException(Thread.currentThread().getName() + " interrupted");
             }
         }
     }
@@ -425,7 +429,7 @@ public class Analysis {
         } catch (FileNotFoundException e) {
             LOGGER.log(Level.SEVERE, "Output file not found");
             progress.failed = true;
-            e.printStackTrace();
+            throw new IllegalArgumentException("Output file not found");
         }
         int continuousHandleAllocationCount = 0;
         int counter = 0;
@@ -691,7 +695,7 @@ public class Analysis {
                 leaderboardMap.merge(key, value, Integer::sum);
             });
             LOGGER.log(Level.INFO, "Results after weighing in BestGCRuntime metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " " + i));
+            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
         }
         if(metricsList.contains(Metrics.AvgGCRuntime)) {
             List<Map.Entry<GCType, Double>> sortedList = avgGCRuns.entrySet().stream().sorted(Map.Entry.comparingByValue())
@@ -702,7 +706,7 @@ public class Analysis {
                 leaderboardMap.merge(key, value, Integer::sum);
             });
             LOGGER.log(Level.INFO, "Results after weighing in AvgGCRuntime metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " " + i));
+            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
         }
         if(metricsList.contains(Metrics.Throughput)) {
             List<Map.Entry<GCType, List<Double>>> sortedList = throughputsMap.entrySet().stream()
@@ -714,7 +718,7 @@ public class Analysis {
                 leaderboardMap.merge(key, value, Integer::sum);
             });
             LOGGER.log(Level.INFO, "Results after weighing in Throughput metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " " + i));
+            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
         }
         if(metricsList.contains(Metrics.Latency)) {
             int value = gcTypes.size();
@@ -734,7 +738,7 @@ public class Analysis {
                 leaderboardMap.merge(GCType.SERIAL, value, Integer::sum);
             }
             LOGGER.log(Level.INFO, "Results after weighing in Latency metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " " + i));
+            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
         }
         if(metricsList.contains(Metrics.MinorPauses)) {
             List<Map.Entry<GCType, List<Integer>>> sortedList = pausesMap.entrySet().stream()
@@ -750,7 +754,7 @@ public class Analysis {
                 leaderboardMap.merge(key, value, Integer::sum);
             });
             LOGGER.log(Level.INFO, "Results after weighing in MinorPauses metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " " + i));
+            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
         }
         if(metricsList.contains(Metrics.FullPauses)) {
             List<Map.Entry<GCType, List<Integer>>> sortedList = pausesMap.entrySet().stream()
@@ -766,7 +770,7 @@ public class Analysis {
                 leaderboardMap.merge(key, value, Integer::sum);
             });
             LOGGER.log(Level.INFO, "Results after weighing in FullPauses metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " " + i));
+            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
         }
         leaderboardMap.entrySet().stream().sorted((e1, e2) -> e2.getValue().compareTo(e1.getValue()))
                 .forEach(e -> leaderboard.add(e.getKey()));
