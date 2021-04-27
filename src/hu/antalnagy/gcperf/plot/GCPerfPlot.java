@@ -7,6 +7,7 @@ import hu.antalnagy.gcperf.GCType;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
@@ -15,68 +16,40 @@ import java.util.stream.Collectors;
 
 public class GCPerfPlot {
 
+    private static final GCPerfPlot gcPerfPlot = new GCPerfPlot();
     private final Plot plot = Plot.create();
     private List<GCType> gcTypes;
     private Map<GCType, List<Double>> runtimesMap;
     private Map<GCType, Double> avgRuntimesMap;
     private Map<GCType, List<Double>>  throughputsMap;
-    private Map<GCType, List<Integer>> pausesMap;
 
     private static final Logger LOGGER = Logger.getLogger(GCPerfPlot.class.getSimpleName());
 
-    public GCPerfPlot(List<GCType> gcTypes, Map<GCType, List<Double>> runtimesMap, Map<GCType, Double> avgRuntimesMap,
-                      Map<GCType, List<Double>> throughputsMap, Map<GCType, List<Integer>> pausesMap) {
-        this.gcTypes = gcTypes;
-        this.runtimesMap = runtimesMap;
-        this.avgRuntimesMap = avgRuntimesMap;
-        this.throughputsMap = throughputsMap;
-        this.pausesMap = pausesMap;
-    }
+    private GCPerfPlot() {}
 
-    public List<GCType> getGcTypes() {
-        return gcTypes;
+    public static GCPerfPlot getInstance() {
+        return gcPerfPlot;
     }
 
     public void setGcTypes(List<GCType> gcTypes) {
-        this.gcTypes = gcTypes;
-    }
-
-    public Map<GCType, List<Double>> getRuntimesMap() {
-        return runtimesMap;
+        this.gcTypes = new ArrayList<>(gcTypes);
     }
 
     public void setRuntimesMap(Map<GCType, List<Double>> runtimesMap) {
-        this.runtimesMap = runtimesMap;
-    }
-
-    public Map<GCType, Double> getAvgRuntimesMap() {
-        return avgRuntimesMap;
+        this.runtimesMap = new HashMap<>(runtimesMap);
     }
 
     public void setAvgRuntimesMap(Map<GCType, Double> avgRuntimesMap) {
-        this.avgRuntimesMap = avgRuntimesMap;
-    }
-
-    public Map<GCType, List<Double>> getThroughputsMap() {
-        return throughputsMap;
+        this.avgRuntimesMap = new HashMap<>(avgRuntimesMap);
     }
 
     public void setThroughputsMap(Map<GCType, List<Double>> throughputsMap) {
-        this.throughputsMap = throughputsMap;
+        this.throughputsMap = new HashMap<>(throughputsMap);
     }
 
-    public Map<GCType, List<Integer>> getPausesMap() {
-        return pausesMap;
-    }
-
-    public void setPausesMap(Map<GCType, List<Integer>> pausesMap) {
-        this.pausesMap = pausesMap;
-    }
-
-    public void plotHelper(String title, List<Double> measurements, List<Double> bins, double max, double min)
+    public void plotHelper(String title, List<Double> measurements, List<Double> bins, double min, double max)
             throws IOException, PythonExecutionException {
-        double maxIncrement = max <= 101.0 ? 1 : max % 100.0;
-        bins.add(max + maxIncrement);
+        bins.add(max + max/10);
         plot.hist().add(measurements).rwidth(0.025).bins(bins).stacked(false).align(HistBuilder.Align.left)
                 .orientation(HistBuilder.Orientation.vertical);
         plot.xlim(min - min/10, max + max/10);
@@ -85,31 +58,35 @@ public class GCPerfPlot {
         plot.close();
     }
 
+    private List<Double> getBins(List<Double> measurements) {
+        return new ArrayList<>(measurements).stream().sorted().collect(Collectors.toList());
+    }
+
+    private double[] getMinMaxLimits(List<Double> measurements) {
+        if(measurements.isEmpty()) {
+            LOGGER.log(Level.SEVERE, "No values available");
+            throw new IllegalArgumentException("No values available");
+        }
+        double xLimMin = measurements.stream().min(Double::compare).orElse(0.0);
+        double xLimMax = measurements.stream().max(Double::compare).orElse(0.0);
+        return new double[] {xLimMin, xLimMax};
+    }
+
     public void plotRuntimes() throws IOException, PythonExecutionException {
         for(GCType gcType : gcTypes) {
             var runtimes = runtimesMap.get(gcType);
-            final var xlimMin = runtimes.stream().min(Double::compare);
-            final var xlimMax = runtimes.stream().max(Double::compare);
-            if(xlimMin.isEmpty()) {
-                LOGGER.log(Level.SEVERE, "xLim Minimum value or Maximum value can not be determined");
-                throw new IllegalArgumentException("Input values list is empty");
-            }
-            List<Double> bins = new ArrayList<>(runtimes).stream().sorted().collect(Collectors.toList());
-            plotHelper(gcType.name() + " Runtime (in s)", runtimes, bins, xlimMax.get(), xlimMin.get());
+            double[] limits = getMinMaxLimits(runtimes);
+            List<Double> bins = getBins(runtimes);
+            plotHelper(gcType.name() + " Runtime (in s)", runtimes, bins, limits[0], limits[1]);
         }
     }
 
     public void plotThroughputs() throws IOException, PythonExecutionException {
         for(GCType gcType : gcTypes) {
             var throughputs = throughputsMap.get(gcType);
-            final var xlimMin = -1.0;
-            final var xlimMax = 101.0;
-            if(throughputs.isEmpty()) {
-                LOGGER.log(Level.SEVERE, "No throughput values available");
-                throw new IllegalArgumentException("No throughput values available");
-            }
-            List<Double> bins = new ArrayList<>(throughputs).stream().sorted().collect(Collectors.toList());
-            plotHelper(gcType.name() + " Throughput (in %)", throughputs, bins, xlimMax, xlimMin);
+            double[] limits = getMinMaxLimits(throughputs);
+            List<Double> bins = getBins(throughputs);
+            plotHelper(gcType.name() + " Throughput (in %)", throughputs, bins, limits[0], limits[1]);
         }
     }
 
@@ -118,19 +95,13 @@ public class GCPerfPlot {
         var sortedGCTypes = gcTypes.stream().sorted((gcType1, gcType2) ->
                 avgRuntimesMap.get(gcType1) < avgRuntimesMap.get(gcType2) ? -1 :
                         (avgRuntimesMap.get(gcType1).equals(avgRuntimesMap.get(gcType2)) ? 0 : 1)).collect(Collectors.toList());
-        var sortedAvgRuntimesMap = avgRuntimesMap.entrySet().stream()
+        var sortedAvgRuntimes = avgRuntimesMap.entrySet().stream()
                 .sorted(Map.Entry.comparingByValue()).map(Map.Entry::getValue).collect(Collectors.toList());
-        List<Double> bins = new ArrayList<>(sortedAvgRuntimesMap).stream().sorted().collect(Collectors.toList());
-        bins.add(bins.get(bins.size()-1) + 1.0);
-        plot.hist().add(sortedAvgRuntimesMap).rwidth(0.025).bins(bins).stacked(false).align(HistBuilder.Align.left)
-                .orientation(HistBuilder.Orientation.vertical);
+        List<Double> bins = getBins(sortedAvgRuntimes);
         for(GCType gcType : sortedGCTypes) {
             sb.append(gcType.name()).append(" ");
         }
         plot.xlabel(sb.toString());
-        plot.xlim(bins.get(0) - bins.get(0) / 10, bins.get(bins.size()-1) - bins.get(bins.size()-1) / 10);
-        plot.title("Average Runtimes (in s) by GC Type");
-        plot.show();
-        plot.close();
+        plotHelper("Average Runtimes (in s) by GC Type", sortedAvgRuntimes, bins, bins.get(0), bins.get(bins.size()-1));
     }
 }

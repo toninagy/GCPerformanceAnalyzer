@@ -85,7 +85,7 @@ public class Analysis {
             progressMap.put(i, "Finishing analysis and calculating results ...");
         }
 
-        //return progressLevel in percentage points
+        //returns progressLevel in percentage points
         public double getProgressLevel() {
             return progressLevel / ((double) progressMap.size());
         }
@@ -607,7 +607,7 @@ public class Analysis {
         return counter;
     }
 
-    private int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) { //from statistics
+    private int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) {
         for(String line : parsedStrings) {
             if(line.contains("Full GCs") && line.contains(gcStatsPattern.toString())) {
                 String[] split = line.split(" ");

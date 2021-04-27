@@ -26,21 +26,20 @@ public class GCPerfDriver {
     private static final Logger LOGGER = Logger.getLogger(GCPerfDriver.class.getSimpleName());
 
     private String mainClass;
-    private List<GCType> gcTypes;
     private Analysis analysis;
     private List<String> resultMetrics;
 
     public static void main(String[] args) { //todo remove main from deployment
         var list = new ArrayList<GCType>();
-            list.add(GCType.SERIAL);
-            list.add(GCType.PARALLEL);
+//            list.add(GCType.SERIAL);
+//            list.add(GCType.PARALLEL);
         list.add(GCType.G1);
-        list.add(GCType.ZGC);
+//        list.add(GCType.ZGC);
         list.add(GCType.SHENANDOAH);
         GCPerfDriver gcPerfDriver;
         try {
             gcPerfDriver = new GCPerfDriver();
-            gcPerfDriver.launch(new File("App.class"), 2, 223, 300,
+            gcPerfDriver.launch(new File("App.class"), 3, 323, 400,
                     40, 50, list, new Analysis.Metrics[]{Analysis.Metrics.BestGCRuntime,
                             Analysis.Metrics.AvgGCRuntime, Analysis.Metrics.Throughput, Analysis.Metrics.Latency,
                             Analysis.Metrics.MinorPauses, Analysis.Metrics.FullPauses}, true);
@@ -84,7 +83,6 @@ public class GCPerfDriver {
     public void launch(File file, int numOfRuns, int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize,
                        int maxHeapIncrementSize, List<GCType> gcTypes, Analysis.Metrics[] metrics,
                        boolean exportToCSV) throws IOException, PythonExecutionException, InterruptedException {
-        this.gcTypes = new ArrayList<>(gcTypes);
         this.resultMetrics = new ArrayList<>();
         try {
             extractBinariesAndSetMainClass(file);
@@ -109,10 +107,10 @@ public class GCPerfDriver {
         var pausesMap = analysis.getPausesMap();
         var leaderboard = analysis.getLeaderboard();
         leaderboard.forEach(record -> LOGGER.log(Level.INFO, leaderboard.indexOf(record) + 1 + ": " + record.name()));
-        resultsList(runtimesMap, throughputsMap, pausesMap);
+        resultsList(gcTypes, runtimesMap, throughputsMap, pausesMap);
         analysis.getProgress().setDone(true);
         try {
-            plotResults(runtimesMap, avgRuntimesMap, throughputsMap, pausesMap);
+            plotResults(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap);
         } catch (PythonExecutionException ex) {
             LOGGER.log(Level.SEVERE, "PythonExecutionException occurred");
             throw new PythonExecutionException(ex.getMessage());
@@ -120,7 +118,7 @@ public class GCPerfDriver {
         if (exportToCSV) {
             SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss");
             Date date = new Date(System.currentTimeMillis());
-            createCSVFile(runtimesMap, throughputsMap, pausesMap, "results-" + formatter.format(date) + ".csv");
+            createCSVFile(gcTypes, runtimesMap, throughputsMap, pausesMap, "results-" + formatter.format(date) + ".csv");
         }
     }
 
@@ -205,7 +203,7 @@ public class GCPerfDriver {
         }
     }
 
-    private void createCSVFile(Map<GCType, List<Double>> runtimesMap, Map<GCType, List<Double>> throughputMap,
+    private void createCSVFile(List<GCType> gcTypes, Map<GCType, List<Double>> runtimesMap, Map<GCType, List<Double>> throughputMap,
                                Map<GCType, List<Integer>> pausesMap, String fileName) {
         File outFile = new File(LOC_OUT_CSV_PATH + "/" + fileName);
         try (PrintWriter printWriter = new PrintWriter(outFile)) {
@@ -237,7 +235,7 @@ public class GCPerfDriver {
         return stringBuilder.toString();
     }
 
-    private void resultsList(Map<GCType, List<Double>> runtimesMap, Map<GCType, List<Double>> throughputMap,
+    private void resultsList(List<GCType> gcTypes, Map<GCType, List<Double>> runtimesMap, Map<GCType, List<Double>> throughputMap,
                                         Map<GCType, List<Integer>> pausesMap) {
         for (GCType gcType : gcTypes) {
             String result = buildResultString(runtimesMap, throughputMap, pausesMap, gcType);
@@ -245,12 +243,21 @@ public class GCPerfDriver {
         }
     }
 
-    private void plotResults(Map<GCType, List<Double>> runtimesMap,
-                             Map<GCType, Double> avgRuntimesMap, Map<GCType, List<Double>> throughputsMap,
-                             Map<GCType, List<Integer>> pausesMap) throws IOException, PythonExecutionException {
-        GCPerfPlot gcPerfPlot = new GCPerfPlot(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap, pausesMap); //todo with setters
+    private void plotResults(List<GCType> gcTypes, Map<GCType, List<Double>> runtimesMap, Map<GCType, Double> avgRuntimesMap,
+                             Map<GCType, List<Double>> throughputsMap) throws IOException, PythonExecutionException {
+        GCPerfPlot gcPerfPlot = constructGcPerfPlot(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap);
         gcPerfPlot.plotRuntimes();
         gcPerfPlot.plotThroughputs();
         gcPerfPlot.plotAvgRuntimes();
+    }
+
+    private GCPerfPlot constructGcPerfPlot(List<GCType> gcTypes, Map<GCType, List<Double>> runtimesMap, Map<GCType, Double> avgRuntimesMap,
+                                           Map<GCType, List<Double>> throughputsMap) {
+        GCPerfPlot gcPerfPlot = GCPerfPlot.getInstance();
+        gcPerfPlot.setGcTypes(gcTypes);
+        gcPerfPlot.setRuntimesMap(runtimesMap);
+        gcPerfPlot.setAvgRuntimesMap(avgRuntimesMap);
+        gcPerfPlot.setThroughputsMap(throughputsMap);
+        return gcPerfPlot;
     }
 }
