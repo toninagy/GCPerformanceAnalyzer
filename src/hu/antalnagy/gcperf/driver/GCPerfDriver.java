@@ -3,12 +3,14 @@ package hu.antalnagy.gcperf.driver;
 import com.github.sh0nk.matplotlib4j.PythonExecutionException;
 import hu.antalnagy.gcperf.Analysis;
 import hu.antalnagy.gcperf.GCType;
+import hu.antalnagy.gcperf.persistence.DBDriver;
 import hu.antalnagy.gcperf.plot.GCPerfPlot;
 
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.sql.Timestamp;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.logging.FileHandler;
@@ -25,6 +27,7 @@ public class GCPerfDriver {
     private static final Path LOC_OUT_CSV_PATH = Paths.get(LOC_PATH + "/res/csv").toAbsolutePath();
     private static final Logger LOGGER = Logger.getLogger(GCPerfDriver.class.getSimpleName());
 
+    private DBDriver dbDriver;
     private String mainClass;
     private Analysis analysis;
     private List<String> resultMetrics;
@@ -39,10 +42,10 @@ public class GCPerfDriver {
         GCPerfDriver gcPerfDriver;
         try {
             gcPerfDriver = new GCPerfDriver();
-            gcPerfDriver.launch(new File("App.class"), 3, 323, 400,
+            gcPerfDriver.launch(new File("App.class"), 2, 323, 400,
                     40, 50, list, new Analysis.Metrics[]{Analysis.Metrics.BestGCRuntime,
                             Analysis.Metrics.AvgGCRuntime, Analysis.Metrics.Throughput, Analysis.Metrics.Latency,
-                            Analysis.Metrics.MinorPauses, Analysis.Metrics.FullPauses}, true);
+                            Analysis.Metrics.MinorPauses, Analysis.Metrics.FullPauses}, false);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
@@ -71,6 +74,10 @@ public class GCPerfDriver {
         return Analysis.getLOGGER();
     }
 
+    public Logger getDBDriverLogger() {
+        return DBDriver.getLOGGER();
+    }
+
     /***
      * @param file .class file or .jar file
      * @param initStartHeapSize Start heap size in MB
@@ -91,6 +98,7 @@ public class GCPerfDriver {
             SimpleFormatter formatter = new SimpleFormatter();
             fileHandler.setFormatter(formatter);
             getAnalysisLogger().addHandler(fileHandler);
+            getDBDriverLogger().addHandler(fileHandler);
             LOGGER.addHandler(fileHandler);
             analysis.performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize,
                     startHeapIncrementSize, maxHeapIncrementSize);
@@ -108,6 +116,17 @@ public class GCPerfDriver {
         var leaderboard = analysis.getLeaderboard();
         leaderboard.forEach(record -> LOGGER.log(Level.INFO, leaderboard.indexOf(record) + 1 + ": " + record.name()));
         resultsList(gcTypes, runtimesMap, throughputsMap, pausesMap);
+        if(dbDriver == null) {
+            dbDriver = new DBDriver();
+        }
+        else {
+            dbDriver.createConnectionAndStatement();
+        }
+        try {
+            dbDriver.insertRow(new Timestamp(System.currentTimeMillis()), file.getName(), getLeaderboard());
+        } finally {
+            dbDriver.close();
+        }
         analysis.getProgress().setDone(true);
         try {
             plotResults(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap);

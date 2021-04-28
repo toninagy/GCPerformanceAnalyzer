@@ -681,7 +681,7 @@ public class Analysis {
         return outputStrings;
     }
 
-    private void setLeaderboard(Metrics... metrics) {
+    public void setLeaderboard(Metrics... metrics) {
         List<Metrics> metricsList = List.of(metrics);
         Map<GCType, Integer> leaderboardMap = new HashMap<>();
 
