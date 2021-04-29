@@ -3,7 +3,6 @@ package hu.antalnagy.gcperf.persistence;
 import hu.antalnagy.gcperf.GCType;
 
 import java.sql.*;
-import java.sql.Date;
 import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -92,7 +91,7 @@ public class DBDriver implements AutoCloseable {
                 int g1Ranking = resultSet.getInt("ranking_g1");
                 int zgcRanking = resultSet.getInt("ranking_zgc");
                 int shenandoahRanking = resultSet.getInt("ranking_shenandoah");
-                Date dateCreated = resultSet.getDate("date_created");
+                Timestamp dateCreated = resultSet.getTimestamp("date_created");
                 List<String> strings = new ArrayList<>();
                 Collections.addAll(strings, fileName, String.valueOf(serialRanking),
                         String.valueOf(parallelRanking), String.valueOf(g1Ranking), String.valueOf(zgcRanking),

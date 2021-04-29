@@ -45,7 +45,7 @@ public class GCPerfDriver {
             gcPerfDriver.launch(new File("App.class"), 2, 323, 400,
                     40, 50, list, new Analysis.Metrics[]{Analysis.Metrics.BestGCRuntime,
                             Analysis.Metrics.AvgGCRuntime, Analysis.Metrics.Throughput, Analysis.Metrics.Latency,
-                            Analysis.Metrics.MinorPauses, Analysis.Metrics.FullPauses}, false);
+                            Analysis.Metrics.MinorPauses, Analysis.Metrics.FullPauses}, false, false);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IO exception occurred");
             ex.printStackTrace();
@@ -89,7 +89,7 @@ public class GCPerfDriver {
      */
     public void launch(File file, int numOfRuns, int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize,
                        int maxHeapIncrementSize, List<GCType> gcTypes, Analysis.Metrics[] metrics,
-                       boolean exportToCSV) throws IOException, PythonExecutionException, InterruptedException {
+                       boolean exportToCSV, boolean plot) throws IOException, PythonExecutionException, InterruptedException {
         this.resultMetrics = new ArrayList<>();
         try {
             extractBinariesAndSetMainClass(file);
@@ -128,11 +128,13 @@ public class GCPerfDriver {
             dbDriver.close();
         }
         analysis.getProgress().setDone(true);
-        try {
-            plotResults(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap);
-        } catch (PythonExecutionException ex) {
-            LOGGER.log(Level.SEVERE, "PythonExecutionException occurred");
-            throw new PythonExecutionException(ex.getMessage());
+        if(plot) {
+            try {
+                plotResults(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap);
+            } catch (PythonExecutionException ex) {
+                LOGGER.log(Level.SEVERE, "PythonExecutionException occurred");
+                throw new PythonExecutionException(ex.getMessage());
+            }
         }
         if (exportToCSV) {
             SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss");
