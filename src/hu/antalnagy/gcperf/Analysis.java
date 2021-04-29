@@ -174,7 +174,7 @@ public class Analysis {
                 int xmx = xm[1];
                 LOGGER.log(Level.INFO, "Initializing run no.: " + (i+1) + "; xms: " + xms + "(M); xmx: " + xmx + "(M)");
                 if (xms == 2048 && xmx == 8192) {
-                    i = noOfRuns;
+                    noOfRuns = i + 1;
                     LOGGER.log(Level.WARNING, "Maximum initial heap size (Xms) and maximum heap size (Xmx) reached\n" +
                             "Initializing last run");
                 }

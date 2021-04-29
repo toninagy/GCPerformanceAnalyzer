@@ -32,32 +32,6 @@ public class GCPerfDriver {
     private Analysis analysis;
     private List<String> resultMetrics;
 
-    public static void main(String[] args) { //todo remove main from deployment
-        var list = new ArrayList<GCType>();
-//            list.add(GCType.SERIAL);
-//            list.add(GCType.PARALLEL);
-        list.add(GCType.G1);
-//        list.add(GCType.ZGC);
-        list.add(GCType.SHENANDOAH);
-        GCPerfDriver gcPerfDriver;
-        try {
-            gcPerfDriver = new GCPerfDriver();
-            gcPerfDriver.launch(new File("App.class"), 2, 323, 400,
-                    40, 50, list, new Analysis.Metrics[]{Analysis.Metrics.BestGCRuntime,
-                            Analysis.Metrics.AvgGCRuntime, Analysis.Metrics.Throughput, Analysis.Metrics.Latency,
-                            Analysis.Metrics.MinorPauses, Analysis.Metrics.FullPauses}, false, false);
-        } catch (IOException ex) {
-            LOGGER.log(Level.SEVERE, "IO exception occurred");
-            ex.printStackTrace();
-        } catch (PythonExecutionException ex) {
-            LOGGER.log(Level.SEVERE, "Python execution error occurred");
-            ex.printStackTrace();
-        } catch (InterruptedException ex) {
-            LOGGER.log(Level.SEVERE, "Interrupted thread");
-            ex.printStackTrace();
-        }
-    }
-
     public Analysis.Progress getProgress() {
         return analysis.getProgress();
     }
@@ -169,7 +143,7 @@ public class GCPerfDriver {
     }
 
     private static void copyFileToBinDirectory(File file) throws IOException {
-        File copy = new File(LOC_OUT_BIN_PATH.toString() + "/" + file.getName());
+        File copy = new File(LOC_OUT_BIN_PATH + "/" + file.getName());
         try (InputStream in = new BufferedInputStream(new FileInputStream(file));
              OutputStream out = new BufferedOutputStream(new FileOutputStream(copy))) {
             byte[] buffer = new byte[1024];
