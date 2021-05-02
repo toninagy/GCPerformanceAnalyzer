@@ -12,8 +12,6 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 public class Analysis {
     private static final Path LOC_PATH = Paths.get("").toAbsolutePath();
@@ -59,7 +57,7 @@ public class Analysis {
     private final AtomicBoolean memoryAllocationFailureOnLastRun = new AtomicBoolean(false);
     private double lastSuccessfulShenandoahRunTime = 0.0;
 
-    private final List<GCType> leaderboard = new LinkedList<>();
+    private Leaderboard leaderboard;
 
     public enum Metrics {
         BestGCRuntime,
@@ -136,7 +134,7 @@ public class Analysis {
     }
 
     public List<GCType> getLeaderboard() {
-        return leaderboard;
+        return leaderboard.getLeaderboard();
     }
 
     public static Logger getLOGGER() {
@@ -172,18 +170,7 @@ public class Analysis {
                         i, prematureProcessInterrupts.get());
                 int xms = xm[0];
                 int xmx = xm[1];
-                LOGGER.log(Level.INFO, "Initializing run no.: " + (i+1) + "; xms: " + xms + "(M); xmx: " + xmx + "(M)");
-                if (xms == 2048 && xmx == 8192) {
-                    noOfRuns = i + 1;
-                    LOGGER.log(Level.WARNING, "Maximum initial heap size (Xms) and maximum heap size (Xmx) reached\n" +
-                            "Initializing last run");
-                }
-                if (xms == 2048) {
-                    LOGGER.log(Level.INFO, "Maximum initial heap size (Xms) reached");
-                }
-                if (xmx == 8192) {
-                    LOGGER.log(Level.INFO, "Maximum heap size (Xmx) reached");
-                }
+                noOfRuns = checkLimits(noOfRuns, i, xms, xmx);
                 ProcessBuilder builder = new ProcessBuilder(buildExecutableCommandArray(buildCLI(gcType, xms,
                         xmx)));
                 builder.directory(LOC_OUT_BIN_PATH.toFile());
@@ -221,7 +208,8 @@ public class Analysis {
             pausesMap.put(gcType, pauses);
         }
         progress.progressLevel++;
-        setLeaderboard(metrics);
+        leaderboard = new Leaderboard(avgGCRuns, gcRuntimesMap, throughputsMap, pausesMap, gcTypes);
+        leaderboard.setLeaderboard(metrics);
     }
 
     private void waitABit() { //so that "setting things up" message is visible to humans too
@@ -230,12 +218,28 @@ public class Analysis {
         } catch (InterruptedException ignored) {}
     }
 
-    private double calculateThroughput(double lastThreadExitTime, double gcTime) {
+    private int checkLimits(int noOfRuns, int i, int xms, int xmx) {
+        LOGGER.log(Level.INFO, "Initializing run no.: " + (i+1) + "; xms: " + xms + "(M); xmx: " + xmx + "(M)");
+        if (xms == 2048 && xmx == 8192) {
+            noOfRuns = i + 1;
+            LOGGER.log(Level.WARNING, "Maximum initial heap size (Xms) and maximum heap size (Xmx) reached\n" +
+                    "Initializing last run");
+        }
+        if (xms == 2048) {
+            LOGGER.log(Level.INFO, "Maximum initial heap size (Xms) reached");
+        }
+        if (xmx == 8192) {
+            LOGGER.log(Level.INFO, "Maximum heap size (Xmx) reached");
+        }
+        return noOfRuns;
+    }
+
+    public double calculateThroughput(double lastThreadExitTime, double gcTime) {
         double gcTimeInPercentage = gcTime*100.0/lastThreadExitTime;
         return 100.0 - gcTimeInPercentage;
     }
 
-    private int[] calculateHeapSize(int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize, int maxHeapIncrementSize,
+    public int[] calculateHeapSize(int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize, int maxHeapIncrementSize,
                                            int i, int prematureProcessInterrupts) {
         int[] xm = new int[2];
         xm[0] = Integer.min(initStartHeapSize + ((i - prematureProcessInterrupts) * startHeapIncrementSize), MAX_INIT_HEAP_SIZE);
@@ -269,7 +273,7 @@ public class Analysis {
      * @param maxHeapSize Maximum heap size in MB
      * @return CLI
      */
-    private CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
+    public CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
         if (startHeapSize < 1) {
             LOGGER.log(Level.SEVERE, "Invalid argument for initial heap size!");
             progress.failed = true;
@@ -571,7 +575,7 @@ public class Analysis {
         }
     }
 
-    private int[] yieldNoOfPauses(List<String> parsedStrings, GCType gcType) {
+    public int[] yieldNoOfPauses(List<String> parsedStrings, GCType gcType) {
         int[] pauses = new int[2];
         int fullPauses = yieldNoOfPausesHelper(parsedStrings, false, pauseFullPattern, null) / 2;
         int totalPauses = gcType == GCType.G1 ?
@@ -607,7 +611,7 @@ public class Analysis {
         return counter;
     }
 
-    private int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) {
+    public int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) {
         for(String line : parsedStrings) {
             if(line.contains("Full GCs") && line.contains(gcStatsPattern.toString())) {
                 String[] split = line.split(" ");
@@ -636,7 +640,7 @@ public class Analysis {
         return timeStamp;
     }
 
-    private double calculateTotalTimeRounded(List<String> parsedStrings, Pattern pattern1, Pattern pattern2,
+    public double calculateTotalTimeRounded(List<String> parsedStrings, Pattern pattern1, Pattern pattern2,
                                                     String separator, boolean inMs) {
         List<String> realTimeStringList = new ArrayList<>();
         for (String line : parsedStrings) {
@@ -679,100 +683,5 @@ public class Analysis {
             ex.printStackTrace();
         }
         return outputStrings;
-    }
-
-    public void setLeaderboard(Metrics... metrics) {
-        List<Metrics> metricsList = List.of(metrics);
-        Map<GCType, Integer> leaderboardMap = new HashMap<>();
-
-        if(metricsList.contains(Metrics.BestGCRuntime)) {
-            List<Map.Entry<GCType, List<Double>>> sortedList = gcRuntimesMap.entrySet().stream()
-                    .sorted(Comparator.comparing(e -> e.getValue().stream().min(Double::compareTo)
-                            .orElse((double) Integer.MAX_VALUE))).collect(Collectors.toList());
-            sortedList.forEach(entry -> {
-                GCType key = entry.getKey();
-                int value = sortedList.size() - sortedList.indexOf(entry); //best is lowest
-                leaderboardMap.merge(key, value, Integer::sum);
-            });
-            LOGGER.log(Level.INFO, "Results after weighing in BestGCRuntime metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
-        }
-        if(metricsList.contains(Metrics.AvgGCRuntime)) {
-            List<Map.Entry<GCType, Double>> sortedList = avgGCRuns.entrySet().stream().sorted(Map.Entry.comparingByValue())
-                    .collect(Collectors.toList());
-            sortedList.forEach(entry -> {
-                GCType key = entry.getKey();
-                int value = sortedList.size() - sortedList.indexOf(entry); //best is lowest
-                leaderboardMap.merge(key, value, Integer::sum);
-            });
-            LOGGER.log(Level.INFO, "Results after weighing in AvgGCRuntime metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
-        }
-        if(metricsList.contains(Metrics.Throughput)) {
-            List<Map.Entry<GCType, List<Double>>> sortedList = throughputsMap.entrySet().stream()
-                    .sorted(Comparator.comparing(e -> e.getValue().stream().max(Double::compareTo).orElse(0.0)))
-                    .collect(Collectors.toList());
-            sortedList.forEach(entry -> {
-                GCType key = entry.getKey();
-                int value = sortedList.indexOf(entry) + 1; //best is highest
-                leaderboardMap.merge(key, value, Integer::sum);
-            });
-            LOGGER.log(Level.INFO, "Results after weighing in Throughput metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
-        }
-        if(metricsList.contains(Metrics.Latency)) {
-            int value = gcTypes.size();
-            if(gcTypes.contains(GCType.ZGC)) {
-                leaderboardMap.merge(GCType.ZGC, value--, Integer::sum);
-            }
-            if(gcTypes.contains(GCType.SHENANDOAH)) {
-                leaderboardMap.merge(GCType.SHENANDOAH, value--, Integer::sum);
-            }
-            if(gcTypes.contains(GCType.PARALLEL)) {
-                leaderboardMap.merge(GCType.PARALLEL, value--, Integer::sum);
-            }
-            if(gcTypes.contains(GCType.G1)) {
-                leaderboardMap.merge(GCType.G1, value--, Integer::sum);
-            }
-            if(gcTypes.contains(GCType.SERIAL)) {
-                leaderboardMap.merge(GCType.SERIAL, value, Integer::sum);
-            }
-            LOGGER.log(Level.INFO, "Results after weighing in Latency metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
-        }
-        if(metricsList.contains(Metrics.MinorPauses)) {
-            List<Map.Entry<GCType, List<Integer>>> sortedList = pausesMap.entrySet().stream()
-                    .sorted(Comparator.comparing(e -> {
-                        List<Integer> values = e.getValue();
-                        var minorPauses = Stream.iterate(1, i -> i + 2).limit(values.size() / 2)
-                                .map(values::get).collect(Collectors.toList());
-                        return minorPauses.stream().min(Integer::compareTo).orElse(Integer.MAX_VALUE);
-                    })).collect(Collectors.toList());
-            sortedList.forEach(entry -> {
-                GCType key = entry.getKey();
-                int value = sortedList.size() - sortedList.indexOf(entry); //best is lowest
-                leaderboardMap.merge(key, value, Integer::sum);
-            });
-            LOGGER.log(Level.INFO, "Results after weighing in MinorPauses metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
-        }
-        if(metricsList.contains(Metrics.FullPauses)) {
-            List<Map.Entry<GCType, List<Integer>>> sortedList = pausesMap.entrySet().stream()
-                    .sorted(Comparator.comparing(e -> {
-                        List<Integer> values = e.getValue();
-                        var fullPauses = Stream.iterate(0, i -> i + 2).limit(values.size() / 2)
-                                .map(values::get).collect(Collectors.toList());
-                        return fullPauses.stream().min(Integer::compareTo).orElse(Integer.MAX_VALUE);
-                    })).collect(Collectors.toList());
-            sortedList.forEach(entry -> {
-                GCType key = entry.getKey();
-                int value = sortedList.size() - sortedList.indexOf(entry); //best is lowest
-                leaderboardMap.merge(key, value, Integer::sum);
-            });
-            LOGGER.log(Level.INFO, "Results after weighing in FullPauses metric:");
-            leaderboardMap.forEach((gcType, i) -> LOGGER.log(Level.INFO,gcType + " score: " + i));
-        }
-        leaderboardMap.entrySet().stream().sorted((e1, e2) -> e2.getValue().compareTo(e1.getValue()))
-                .forEach(e -> leaderboard.add(e.getKey()));
     }
 }

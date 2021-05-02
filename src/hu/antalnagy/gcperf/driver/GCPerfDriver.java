@@ -3,6 +3,7 @@ package hu.antalnagy.gcperf.driver;
 import com.github.sh0nk.matplotlib4j.PythonExecutionException;
 import hu.antalnagy.gcperf.Analysis;
 import hu.antalnagy.gcperf.GCType;
+import hu.antalnagy.gcperf.Leaderboard;
 import hu.antalnagy.gcperf.persistence.DBDriver;
 import hu.antalnagy.gcperf.plot.GCPerfPlot;
 
@@ -44,14 +45,6 @@ public class GCPerfDriver {
         return new LinkedList<>(analysis.getLeaderboard());
     }
 
-    public Logger getAnalysisLogger() {
-        return Analysis.getLOGGER();
-    }
-
-    public Logger getDBDriverLogger() {
-        return DBDriver.getLOGGER();
-    }
-
     /***
      * @param file .class file or .jar file
      * @param initStartHeapSize Start heap size in MB
@@ -71,8 +64,9 @@ public class GCPerfDriver {
             FileHandler fileHandler = new FileHandler(LOC_LOG_PATH.toString());
             SimpleFormatter formatter = new SimpleFormatter();
             fileHandler.setFormatter(formatter);
-            getAnalysisLogger().addHandler(fileHandler);
-            getDBDriverLogger().addHandler(fileHandler);
+            Analysis.getLOGGER().addHandler(fileHandler);
+            Leaderboard.getLOGGER().addHandler(fileHandler);
+            DBDriver.getLOGGER().addHandler(fileHandler);
             LOGGER.addHandler(fileHandler);
             analysis.performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize,
                     startHeapIncrementSize, maxHeapIncrementSize);
