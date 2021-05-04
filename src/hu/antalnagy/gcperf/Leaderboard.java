@@ -31,6 +31,26 @@ public class Leaderboard {
         return new LinkedList<>(leaderboard);
     }
 
+    public Map<GCType, Double> getAvgGCRuns() {
+        return avgGCRuns;
+    }
+
+    public Map<GCType, List<Double>> getGcRuntimesMap() {
+        return gcRuntimesMap;
+    }
+
+    public Map<GCType, List<Double>> getThroughputsMap() {
+        return throughputsMap;
+    }
+
+    public Map<GCType, List<Integer>> getPausesMap() {
+        return pausesMap;
+    }
+
+    public List<GCType> getGcTypes() {
+        return gcTypes;
+    }
+
     public static Logger getLOGGER() {
         return LOGGER;
     }
@@ -38,6 +58,7 @@ public class Leaderboard {
     public void setLeaderboard(Analysis.Metrics... metrics) {
         List<Analysis.Metrics> metricsList = List.of(metrics);
         Map<GCType, Integer> leaderboardMap = new HashMap<>();
+        leaderboard.clear();
 
         if(metricsList.contains(Analysis.Metrics.BestGCRuntime)) {
             throughputRuntimeHelper(leaderboardMap, gcRuntimesMap, false);

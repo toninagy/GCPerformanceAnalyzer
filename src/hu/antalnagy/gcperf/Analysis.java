@@ -113,6 +113,18 @@ public class Analysis {
         isShenandoahOnly = gcTypes.contains(GCType.SHENANDOAH) && gcTypes.size() == 1;
     }
 
+    public String getMainClass() {
+        return mainClass;
+    }
+
+    public List<GCType> getGcTypes() {
+        return new ArrayList<>(gcTypes);
+    }
+
+    public Metrics[] getMetrics() {
+        return Arrays.asList(metrics).toArray(Metrics[]::new);
+    }
+
     public Progress getProgress() {
         return progress;
     }
@@ -143,7 +155,7 @@ public class Analysis {
 
     public void performGCAnalysis(int runs, int initStartHeapSize, int initMaxHeapSize,
                                   int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
-        waitABit();
+        validateInputParameters(runs, initStartHeapSize, initMaxHeapSize, startHeapIncrementSize, maxHeapIncrementSize);
         for (GCType gcType : gcTypes) {
             List<Double> measuredTimes = new ArrayList<>();
             List<Double> measuredSTWTimes = new ArrayList<>();
@@ -190,8 +202,8 @@ public class Analysis {
                         outErrFile);
                 if(!erroneousRun.get()) {
                     totalTime = yieldGCRunTimes(outFile, gcType, measuredTimes, measuredSTWTimes, totalTime, i);
-                    int fullPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[0];
-                    int minorPauses = yieldNoOfPausesFromSource(yieldOutputStringsFromFile(outFile), gcType)[1];
+                    int fullPauses = yieldNoOfPauses(yieldOutputStringsFromFile(outFile), gcType)[0];
+                    int minorPauses = yieldNoOfPauses(yieldOutputStringsFromFile(outFile), gcType)[1];
                     double lastThreadExitTime = yieldLastThreadExitFromSource(yieldOutputStringsFromFile(outFile));
                     double throughput = calculateThroughput(lastThreadExitTime, measuredSTWTimes.get(measuredSTWTimes.size()-1));
                     throughputs.add(throughput);
@@ -212,7 +224,36 @@ public class Analysis {
         leaderboard.setLeaderboard(metrics);
     }
 
-    private void waitABit() { //so that "setting things up" message is visible to humans too
+    private void validateInputParameters(int runs, int initStartHeapSize, int initMaxHeapSize,
+                                               int startHeapIncrementSize, int maxHeapIncrementSize) {
+        if(runs < 1 || runs > 100) {
+            LOGGER.log(Level.SEVERE, "Invalid argument for number of runs");
+            progress.failed = true;
+            throw new IllegalArgumentException("Number of runs should be between 1 and 100!");
+        }
+        if (initStartHeapSize < 1 || initStartHeapSize > 2048) {
+            LOGGER.log(Level.SEVERE, "Invalid argument for initial heap size");
+            progress.failed = true;
+            throw new IllegalArgumentException("Please provide an initial heap size between 1MB and 2048MB!");
+        }
+        if (initMaxHeapSize < 16 || initMaxHeapSize > 8192) {
+            LOGGER.log(Level.SEVERE, "Invalid argument for maximum heap size");
+            progress.failed = true;
+            throw new IllegalArgumentException("Please provide a maximum heap size between 1MB and 8192MB!");
+        }
+        if (startHeapIncrementSize < 1 || startHeapIncrementSize > 1024) {
+            LOGGER.log(Level.SEVERE, "Invalid argument for initial heap increment size");
+            progress.failed = true;
+            throw new IllegalArgumentException("Initial heap increment size must be between 1MB and 1024MB");
+        }
+        if (maxHeapIncrementSize < 1 || maxHeapIncrementSize > 1024) {
+            LOGGER.log(Level.SEVERE, "Invalid argument for maximum heap increment size");
+            progress.failed = true;
+            throw new IllegalArgumentException("Maximum heap increment size must be between 1MB and 1024MB");
+        }
+    }
+
+    private void waitABit() {
         try {
             Thread.sleep(700);
         } catch (InterruptedException ignored) {}
@@ -234,12 +275,12 @@ public class Analysis {
         return noOfRuns;
     }
 
-    public double calculateThroughput(double lastThreadExitTime, double gcTime) {
-        double gcTimeInPercentage = gcTime*100.0/lastThreadExitTime;
+    public static double calculateThroughput(double lastThreadExitTime, double gcTime) {
+        double gcTimeInPercentage = gcTime * 100.0 / lastThreadExitTime;
         return 100.0 - gcTimeInPercentage;
     }
 
-    public int[] calculateHeapSize(int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize, int maxHeapIncrementSize,
+    public static int[] calculateHeapSize(int initStartHeapSize, int initMaxHeapSize, int startHeapIncrementSize, int maxHeapIncrementSize,
                                            int i, int prematureProcessInterrupts) {
         int[] xm = new int[2];
         xm[0] = Integer.min(initStartHeapSize + ((i - prematureProcessInterrupts) * startHeapIncrementSize), MAX_INIT_HEAP_SIZE);
@@ -274,15 +315,15 @@ public class Analysis {
      * @return CLI
      */
     public CLI buildCLI(GCType gcType, int startHeapSize, int maxHeapSize) {
-        if (startHeapSize < 1) {
-            LOGGER.log(Level.SEVERE, "Invalid argument for initial heap size!");
+        if (startHeapSize < 1 || startHeapSize > 2048) {
+            LOGGER.log(Level.SEVERE, "Invalid argument for initial heap size");
             progress.failed = true;
-            throw new IllegalArgumentException("Please provide an initial heap size of at least 1MB!");
+            throw new IllegalArgumentException("Please provide an initial heap size between 1MB and 2048MB!");
         }
-        if (maxHeapSize < 16) {
-            LOGGER.log(Level.SEVERE, "Invalid argument for maximum heap size!");
+        if (maxHeapSize < 16 || maxHeapSize > 8192) {
+            LOGGER.log(Level.SEVERE, "Invalid argument for maximum heap size");
             progress.failed = true;
-            throw new IllegalArgumentException("Please provide a maximum heap size of at least 16MB!");
+            throw new IllegalArgumentException("Please provide a maximum heap size between 1MB and 8192MB!");
         }
         CLI.VMOptions.Xms.setSize(startHeapSize);
         CLI.VMOptions.Xmx.setSize(maxHeapSize);
@@ -348,7 +389,6 @@ public class Analysis {
                 LOGGER.log(Level.SEVERE, "IO exception occurred");
                 progress.failed = true;
                 ex.printStackTrace();
-                throw new Error("IO exception occurred");
             } catch (InterruptedException ex) {
                 LOGGER.log(Level.WARNING, "Java runtime process " + process.get().pid() + " timed out/interrupted");
             }
@@ -402,7 +442,6 @@ public class Analysis {
                 LOGGER.log(Level.SEVERE, Thread.currentThread().getName() + " interrupted");
                 progress.failed = true;
                 ex.printStackTrace();
-                throw new RuntimeException(Thread.currentThread().getName() + " interrupted");
             }
         });
         watcherThread.start();
@@ -416,7 +455,6 @@ public class Analysis {
                 LOGGER.log(Level.SEVERE, Thread.currentThread().getName() + " interrupted");
                 progress.failed = true;
                 ex.printStackTrace();
-                throw new RuntimeException(Thread.currentThread().getName() + " interrupted");
             }
         }
     }
@@ -430,10 +468,10 @@ public class Analysis {
                     triggers.add(line);
                 }
             }
-        } catch (FileNotFoundException e) {
+        } catch (FileNotFoundException ex) {
             LOGGER.log(Level.SEVERE, "Output file not found");
             progress.failed = true;
-            throw new IllegalArgumentException("Output file not found");
+            ex.printStackTrace();
         }
         int continuousHandleAllocationCount = 0;
         int counter = 0;
@@ -521,7 +559,7 @@ public class Analysis {
         return totalTime;
     }
 
-    private Double yieldSTWTimeFromSource(List<String> parsedStrings, GCType gcType) {
+    public static Double yieldSTWTimeFromSource(List<String> parsedStrings, GCType gcType) {
         double totalTimeRounded = 0.0;
         switch (gcType) {
             case ZGC -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcPhasesPattern,
@@ -532,7 +570,7 @@ public class Analysis {
         return totalTimeRounded;
     }
 
-    private double yieldGCTimeFromSource(List<String> parsedStrings, GCType gcType) {
+    public static double yieldGCTimeFromSource(List<String> parsedStrings, GCType gcType) {
         double totalTimeRounded = 0.0;
         switch (gcType) {
             case SERIAL, PARALLEL -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcCpuPattern,
@@ -547,49 +585,21 @@ public class Analysis {
         return totalTimeRounded;
     }
 
-    private int[] yieldNoOfPausesFromSource(List<String> parsedStrings, GCType gcType) {
+    public static int[] yieldNoOfPauses(List<String> parsedStrings, GCType gcType) {
         int[] pauses = new int[2];
-        switch (gcType) {
-            case SERIAL, PARALLEL -> {
-                int fullPauses = yieldNoOfPausesHelper(parsedStrings, false, pauseFullPattern, null) / 2;
-                int totalPauses = yieldNoOfPausesHelper(parsedStrings, false, pausePattern, null) / 2;
-                pauses[0] = fullPauses;
-                pauses[1] = totalPauses - fullPauses;
-                return pauses;
-            }
-            case G1, ZGC -> {
-                return yieldNoOfPauses(parsedStrings, gcType);
-            }
-            case SHENANDOAH -> {
-                int fullPauses = yieldNoOfFullPausesShenandoah(parsedStrings);
-                int totalPauses = yieldNoOfPausesHelper(parsedStrings, true, pausePattern, gcStatsPattern);
-                pauses[0] = fullPauses;
-                pauses[1] = totalPauses - fullPauses;
-                return pauses;
-            }
-            default -> {
-                LOGGER.log(Level.SEVERE, "GCType N/A");
-                progress.failed = true;
-                throw new IllegalArgumentException("Non-existent GC Type");
-            }
-        }
-    }
-
-    public int[] yieldNoOfPauses(List<String> parsedStrings, GCType gcType) {
-        int[] pauses = new int[2];
-        int fullPauses = yieldNoOfPausesHelper(parsedStrings, false, pauseFullPattern, null) / 2;
-        int totalPauses = gcType == GCType.G1 ?
-                yieldNoOfPausesHelper(parsedStrings, false, gcPausePattern, null) :
-                yieldNoOfPausesHelper(parsedStrings, false, gcStartPattern, null);
+        int fullPauses = gcType == GCType.SHENANDOAH ? yieldNoOfFullPausesShenandoah(parsedStrings) :
+                yieldNoOfPausesHelper(parsedStrings, false, pauseFullPattern, null) / 2;
+        int totalPauses = (gcType == GCType.SERIAL || gcType == GCType.PARALLEL) ? yieldNoOfPausesHelper(parsedStrings, false, pausePattern, null) / 2 :
+                (gcType == GCType.G1 ? yieldNoOfPausesHelper(parsedStrings, false, gcPausePattern, null) :
+                        (gcType == GCType.ZGC ? yieldNoOfPausesHelper(parsedStrings, false, gcStartPattern, null) :
+                                yieldNoOfPausesHelper(parsedStrings, true, pausePattern, gcStatsPattern)));
         pauses[0] = fullPauses;
         pauses[1] = totalPauses - fullPauses;
         return pauses;
     }
 
-    private int yieldNoOfPausesHelper(List<String> parsedStrings, boolean filter, Pattern regex1, Pattern regex2) {
+    private static int yieldNoOfPausesHelper(List<String> parsedStrings, boolean filter, Pattern regex1, Pattern regex2) {
         if(filter && regex2 == null) {
-            LOGGER.log(Level.SEVERE, "Second regex is missing");
-            progress.failed = true;
             throw new IllegalArgumentException("Second regex is missing");
         }
         int counter = 0;
@@ -611,9 +621,9 @@ public class Analysis {
         return counter;
     }
 
-    public int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) {
+    private static int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) {
         for(String line : parsedStrings) {
-            if(line.contains("Full GCs") && line.contains(gcStatsPattern.toString())) {
+            if(line.contains("Full GCs")) {
                 String[] split = line.split(" ");
                 int i = 0;
                 while(i < split.length) {
@@ -628,7 +638,7 @@ public class Analysis {
         return 0;
     }
 
-    private double yieldLastThreadExitFromSource(List<String> parsedStrings) {
+    private static double yieldLastThreadExitFromSource(List<String> parsedStrings) {
         double timeStamp = 0.0;
         for(String line : parsedStrings) {
             if(line.contains("Thread finished")) {
@@ -640,7 +650,7 @@ public class Analysis {
         return timeStamp;
     }
 
-    public double calculateTotalTimeRounded(List<String> parsedStrings, Pattern pattern1, Pattern pattern2,
+    private static double calculateTotalTimeRounded(List<String> parsedStrings, Pattern pattern1, Pattern pattern2,
                                                     String separator, boolean inMs) {
         List<String> realTimeStringList = new ArrayList<>();
         for (String line : parsedStrings) {
@@ -671,7 +681,7 @@ public class Analysis {
         return totalTimeRoundedInMs / 1000;
     }
 
-    private List<String> yieldOutputStringsFromFile(File file) {
+    private static List<String> yieldOutputStringsFromFile(File file) {
         List<String> outputStrings = new ArrayList<>();
         try (BufferedReader bufferedReader = new BufferedReader(new FileReader(file), BUFFER_SIZE)) {
             String line;
