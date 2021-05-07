@@ -61,7 +61,8 @@ public class AnalysisTest {
 
         analysis.performGCAnalysis(1,1000,2000,1,1);
 
-        assertFalse(analysis.getGcRuntimesMap().isEmpty());
+        assertFalse(analysis.getAvgRuns().isEmpty());
+        assertFalse(analysis.getGcRuntimes().isEmpty());
         assertFalse(analysis.getAvgGCRuns().isEmpty());
         assertFalse(analysis.getPausesMap().isEmpty());
         assertFalse(analysis.getThroughputsMap().isEmpty());
@@ -244,10 +245,5 @@ public class AnalysisTest {
         assertEquals(100.0, Analysis.calculateThroughput(7.71, 0.0001), EPSILON);
         assertEquals(22.5, Analysis.calculateThroughput(4.71, 3.65), EPSILON);
         assertEquals(0.01, Analysis.calculateThroughput(45.71, 45.7099), EPSILON);
-    }
-
-    @Test
-    public void testLeaderboard() {
-
     }
 }

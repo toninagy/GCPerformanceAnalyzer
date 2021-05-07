@@ -77,7 +77,7 @@ public class GCPerfDriver {
             LOGGER.log(Level.SEVERE, "InterruptedException occurred");
             throw new InterruptedException(ex.getMessage());
         }
-        var runtimesMap = analysis.getGcRuntimesMap();
+        var runtimesMap = analysis.getGcRuntimes();
         var avgRuntimesMap = analysis.getAvgGCRuns();
         var throughputsMap = analysis.getThroughputsMap();
         var pausesMap = analysis.getPausesMap();

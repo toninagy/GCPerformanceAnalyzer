@@ -27,6 +27,7 @@ public class Analysis {
     private static final Logger LOGGER = Logger.getLogger(Analysis.class.getSimpleName());
     private static final int BUFFER_SIZE = 8 * 1024;
 
+    private static final Pattern osThreadPattern = Pattern.compile("\\[os,thread");
     private static final Pattern gcCpuPattern = Pattern.compile("\\[gc,cpu");
     private static final Pattern gcStartPattern = Pattern.compile("\\[gc,start ");
     private static final Pattern gcPhasesPattern = Pattern.compile("\\[gc,phases");
@@ -46,8 +47,9 @@ public class Analysis {
     private final Metrics[] metrics;
     private final Progress progress;
 
+    private final Map<GCType, Double> avgRuns = new HashMap<>();
     private final Map<GCType, Double> avgGCRuns = new HashMap<>();
-    private final Map<GCType, List<Double>> gcRuntimesMap = new HashMap<>();
+    private final Map<GCType, List<Double>> gcRuntimes = new HashMap<>();
     private final Map<GCType, List<Double>> throughputsMap = new HashMap<>();
     private final Map<GCType, List<Integer>> pausesMap = new HashMap<>();
 
@@ -129,12 +131,16 @@ public class Analysis {
         return progress;
     }
 
-    public Map<GCType, Double> getAvgGCRuns() {
-        return new HashMap<> (avgGCRuns);
+    public Map<GCType, Double> getAvgRuns() {
+        return new HashMap<>(avgRuns);
     }
 
-    public Map<GCType, List<Double>> getGcRuntimesMap() {
-        return new HashMap<>(gcRuntimesMap);
+    public Map<GCType, Double> getAvgGCRuns() {
+        return new HashMap<>(avgGCRuns);
+    }
+
+    public Map<GCType, List<Double>> getGcRuntimes() {
+        return new HashMap<>(gcRuntimes);
     }
 
     public Map<GCType, List<Double>> getThroughputsMap() {
@@ -157,11 +163,12 @@ public class Analysis {
                                   int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
         validateInputParameters(runs, initStartHeapSize, initMaxHeapSize, startHeapIncrementSize, maxHeapIncrementSize);
         for (GCType gcType : gcTypes) {
-            List<Double> measuredTimes = new ArrayList<>();
+            List<Double> measuredRuntimes = new ArrayList<>();
+            List<Double> measuredGCTimes = new ArrayList<>();
             List<Double> measuredSTWTimes = new ArrayList<>();
             List<Double> throughputs = new ArrayList<>();
             List<Integer> pauses = new ArrayList<>();
-            double totalTime = 0.0;
+            double totalGCTime = 0.0;
             int noOfRuns = runs;
             int lastRunWithNoMallocFailure = 0;
             prematureProcessInterrupts.set(0);
@@ -192,7 +199,7 @@ public class Analysis {
                 builder.redirectError(outErrFile);
                 final AtomicReference<Process> process = new AtomicReference<>();
                 final AtomicBoolean processSuspended = new AtomicBoolean();
-                createProcessThread(process, processSuspended, builder, gcType, avgGCRuns, outFile);
+                createProcessThread(process, processSuspended, builder, gcType, avgRuns, outFile);
                 waitForMainLock();
                 if (!memoryAllocationFailureOnLastRun.get()) {
                     lastRunWithNoMallocFailure = i;
@@ -201,11 +208,16 @@ public class Analysis {
                 noOfRuns = getNumOfRunsAndHandleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, process,
                         outErrFile);
                 if(!erroneousRun.get()) {
-                    totalTime = yieldGCRunTimes(outFile, gcType, measuredTimes, measuredSTWTimes, totalTime, i);
-                    int fullPauses = yieldNoOfPauses(yieldOutputStringsFromFile(outFile), gcType)[0];
-                    int minorPauses = yieldNoOfPauses(yieldOutputStringsFromFile(outFile), gcType)[1];
-                    double lastThreadExitTime = yieldLastThreadExitFromSource(yieldOutputStringsFromFile(outFile));
-                    double throughput = calculateThroughput(lastThreadExitTime, measuredSTWTimes.get(measuredSTWTimes.size()-1));
+                    List<String> parsedStrings = yieldOutputStringsFromFile(outFile);
+                    totalGCTime = yieldGCRuntimes(parsedStrings, gcType, measuredGCTimes, measuredSTWTimes, totalGCTime, i);
+                    double runtime = yieldLastThreadExitFromSource(parsedStrings);
+                    if (gcType == GCType.SHENANDOAH) {
+                        lastSuccessfulShenandoahRunTime = runtime;
+                    }
+                    double throughput = calculateThroughput(runtime, measuredSTWTimes.get(measuredSTWTimes.size()-1));
+                    int fullPauses = yieldNoOfPauses(parsedStrings, gcType)[0];
+                    int minorPauses = yieldNoOfPauses(parsedStrings, gcType)[1];
+                    measuredRuntimes.add(runtime);
                     throughputs.add(throughput);
                     pauses.add(fullPauses);
                     pauses.add(minorPauses);
@@ -214,13 +226,14 @@ public class Analysis {
                     LOGGER.log(Level.WARNING, "Run no.: " + (i + 1) + " failed");
                 }
             }
-            avgGCRuns.put(gcType, totalTime / runs);
-            gcRuntimesMap.put(gcType, measuredTimes);
+            avgRuns.put(gcType, measuredRuntimes.stream().reduce(Double::sum).orElse(0.0) / measuredRuntimes.size());
+            avgGCRuns.put(gcType, totalGCTime / runs);
+            gcRuntimes.put(gcType, measuredGCTimes);
             throughputsMap.put(gcType, throughputs);
             pausesMap.put(gcType, pauses);
         }
         progress.progressLevel++;
-        leaderboard = new Leaderboard(avgGCRuns, gcRuntimesMap, throughputsMap, pausesMap, gcTypes);
+        leaderboard = new Leaderboard(avgGCRuns, gcRuntimes, throughputsMap, pausesMap, gcTypes);
         leaderboard.setLeaderboard(metrics);
     }
 
@@ -490,7 +503,7 @@ public class Analysis {
 
     private void induceThreadSleep(Map<GCType, Double> avgRunsMap, int magnifier) throws InterruptedException {
         if (lastSuccessfulShenandoahRunTime != 0) {
-            Thread.sleep((long) ((lastSuccessfulShenandoahRunTime + 0.25) * 1000L * (magnifier + 1)));
+            Thread.sleep((long) (lastSuccessfulShenandoahRunTime * 1000L * (magnifier + 1)));
         }
         else {
             if (!isShenandoahOnly) {
@@ -502,7 +515,7 @@ public class Analysis {
                 }
                 double avgRuns = totalRuns / gcTypes.size();
                 double shenandoahWaitThresholdInMs = 2 * avgRuns;
-                Thread.sleep((long) Math.max(250, (shenandoahWaitThresholdInMs * 1000 * (magnifier + 1))));
+                Thread.sleep((long) Math.max(500 * (magnifier + 1), (shenandoahWaitThresholdInMs * 1000 * (magnifier + 1))));
             } else {
                 Thread.sleep(2 * 1000L * (magnifier + 1));
             }
@@ -539,14 +552,10 @@ public class Analysis {
         return noOfRuns;
     }
 
-    private double yieldGCRunTimes(File outFile, GCType gcType, List<Double> measuredTimes, List<Double> measuredSTWTimes,
+    private double yieldGCRuntimes(List<String> parsedStrings, GCType gcType, List<Double> measuredGCTimes, List<Double> measuredSTWTimes,
                                         double totalTime, int runNo) {
-        List<String> parsedStrings = yieldOutputStringsFromFile(outFile);
         double time = yieldGCTimeFromSource(parsedStrings, gcType);
-        if (gcType == GCType.SHENANDOAH) {
-            lastSuccessfulShenandoahRunTime = time;
-        }
-        measuredTimes.add(time);
+        measuredGCTimes.add(time);
         if(gcType == GCType.SERIAL || gcType == GCType.PARALLEL || gcType == GCType.G1) {
             measuredSTWTimes.add(time);
         }
@@ -639,12 +648,14 @@ public class Analysis {
     }
 
     private static double yieldLastThreadExitFromSource(List<String> parsedStrings) {
+        Collections.reverse(parsedStrings);
         double timeStamp = 0.0;
         for(String line : parsedStrings) {
-            if(line.contains("Thread finished")) {
-                String[] split = line.split("\\[");
-                String timeStampString = split[1].substring(0, split[1].length()-2);
-                timeStamp = Double.parseDouble(timeStampString);
+            Matcher matcher = osThreadPattern.matcher(line);
+            if(matcher.find()) {
+                String[] split = line.split("s]");
+                timeStamp = Double.parseDouble(split[0].substring(1));
+                break;
             }
         }
         return timeStamp;
