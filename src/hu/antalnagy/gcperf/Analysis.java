@@ -433,7 +433,7 @@ public class Analysis {
                         LOGGER.log(Level.WARNING, "Possibly selected heap size was too small, rerunning with bigger heap");
                         memoryAllocationFailureOnLastRun.set(true);
                     } else {
-                        LOGGER.log(Level.WARNING, "Probable premature process interrupt happened");
+                        LOGGER.log(Level.WARNING, "Potential premature process interrupt");
                         memoryAllocationFailureOnLastRun.set(false);
                         prematureProcessInterrupts.incrementAndGet();
                         prematureRunIncrement.incrementAndGet();
@@ -514,10 +514,12 @@ public class Analysis {
                     }
                 }
                 double avgRuns = totalRuns / gcTypes.size();
-                double shenandoahWaitThresholdInMs = 2 * avgRuns;
-                Thread.sleep((long) Math.max(500 * (magnifier + 1), (shenandoahWaitThresholdInMs * 1000 * (magnifier + 1))));
+                double shenandoahWaitThresholdInMs = 1.25 * avgRuns;
+                Thread.sleep((long) Math.max(1000 * (magnifier + 1), (shenandoahWaitThresholdInMs * 1000 * (magnifier + 1))));
             } else {
-                Thread.sleep(2 * 1000L * (magnifier + 1));
+                double constant = Math.pow(2, magnifier);
+                int sleep = (int) (constant * 1000L * (magnifier + 1));
+                Thread.sleep(sleep);
             }
         }
     }
@@ -631,6 +633,8 @@ public class Analysis {
     }
 
     private static int yieldNoOfFullPausesShenandoah(List<String> parsedStrings) {
+        Collections.reverse(parsedStrings);
+        int fullPauses = 0;
         for(String line : parsedStrings) {
             if(line.contains("Full GCs")) {
                 String[] split = line.split(" ");
@@ -639,12 +643,18 @@ public class Analysis {
                     String prev = split[i];
                     String actual = split[++i];
                     if(actual.equals("Full")) {
-                        return Integer.parseInt(prev);
+                        try {
+                            fullPauses = Integer.parseInt(prev);
+                            break;
+                        } catch(NumberFormatException ex) {
+                            LOGGER.log(Level.SEVERE, "Couldn't parse full pauses: " + ex.getMessage());
+                        }
                     }
                 }
+                break;
             }
         }
-        return 0;
+        return fullPauses;
     }
 
     private static double yieldLastThreadExitFromSource(List<String> parsedStrings) {
@@ -654,7 +664,11 @@ public class Analysis {
             Matcher matcher = osThreadPattern.matcher(line);
             if(matcher.find()) {
                 String[] split = line.split("s]");
-                timeStamp = Double.parseDouble(split[0].substring(1));
+                try {
+                    timeStamp = Double.parseDouble(split[0].substring(1));
+                } catch (NumberFormatException ex) {
+                    LOGGER.log(Level.SEVERE, "Couldn't parse timestamp: " + ex.getMessage());
+                }
                 break;
             }
         }
@@ -682,13 +696,28 @@ public class Analysis {
             } else {
                 realSecondsString = str.substring(0, str.length() - 2);
             }
-            return Double.parseDouble(realSecondsString);
+            try {
+                return Double.parseDouble(realSecondsString);
+            } catch(NumberFormatException ex) {
+                LOGGER.log(Level.SEVERE, "Couldn't parse real seconds: " + ex.getMessage());
+                return 0.0;
+            }
         }).reduce(Double::sum).orElse(0.0);
         DecimalFormat df = new DecimalFormat("#####.###");
         if (!inMs) {
-            return Double.parseDouble(df.format(realTimeTotal));
+            try {
+                return Double.parseDouble(df.format(realTimeTotal));
+            } catch(NumberFormatException ex) {
+                LOGGER.log(Level.SEVERE, "Couldn't parse real total time: " + ex.getMessage());
+                return 0.0;
+            }
         }
-        double totalTimeRoundedInMs = Double.parseDouble(df.format(realTimeTotal));
+        double totalTimeRoundedInMs = 0.0;
+        try {
+            totalTimeRoundedInMs = Double.parseDouble(df.format(realTimeTotal));
+        } catch (NumberFormatException ex) {
+            LOGGER.log(Level.SEVERE, "Couldn't parse real total time: " + ex.getMessage());
+        }
         return totalTimeRoundedInMs / 1000;
     }
 
