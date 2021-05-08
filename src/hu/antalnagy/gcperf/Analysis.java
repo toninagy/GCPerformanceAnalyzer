@@ -163,6 +163,11 @@ public class Analysis {
                                   int startHeapIncrementSize, int maxHeapIncrementSize) throws IOException {
         validateInputParameters(runs, initStartHeapSize, initMaxHeapSize, startHeapIncrementSize, maxHeapIncrementSize);
         for (GCType gcType : gcTypes) {
+            if(progress.failed) {
+                LOGGER.log(Level.SEVERE, "Stopping analysis");
+                waitABit(); //for gui progress bar
+                break;
+            }
             List<Double> measuredRuntimes = new ArrayList<>();
             List<Double> measuredGCTimes = new ArrayList<>();
             List<Double> measuredSTWTimes = new ArrayList<>();
@@ -182,7 +187,6 @@ public class Analysis {
                             "\nReason: 20 consecutive failed runs\n" +
                             "Possible problems include too small general heap size or too small heap size increments");
                     progress.failed = true;
-                    waitABit();
                     break;
                 }
                 int[] xm = calculateHeapSize(initStartHeapSize, initMaxHeapSize, startHeapIncrementSize, maxHeapIncrementSize,
@@ -232,9 +236,11 @@ public class Analysis {
             throughputsMap.put(gcType, throughputs);
             pausesMap.put(gcType, pauses);
         }
-        progress.progressLevel++;
-        leaderboard = new Leaderboard(avgGCRuns, gcRuntimes, throughputsMap, pausesMap, gcTypes);
-        leaderboard.setLeaderboard(metrics);
+        if(!progress.failed) {
+            progress.progressLevel++;
+            leaderboard = new Leaderboard(avgGCRuns, gcRuntimes, throughputsMap, pausesMap, gcTypes);
+            leaderboard.setLeaderboard(metrics);
+        }
     }
 
     private void validateInputParameters(int runs, int initStartHeapSize, int initMaxHeapSize,

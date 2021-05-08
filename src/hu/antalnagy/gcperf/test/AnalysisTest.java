@@ -53,12 +53,6 @@ public class AnalysisTest {
         assertNotNull(analysis.getMetrics());
         assertNotNull(analysis.getProgress());
 
-        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(0,300,400,100,200));
-        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(2,3000,400,100,200));
-        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(2,300,9000,100,200));
-        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(2,300,400,2000,200));
-        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(2,300,400,100,2000));
-
         analysis.performGCAnalysis(1,1000,2000,1,1);
 
         assertFalse(analysis.getAvgRuns().isEmpty());
@@ -67,6 +61,12 @@ public class AnalysisTest {
         assertFalse(analysis.getPausesMap().isEmpty());
         assertFalse(analysis.getThroughputsMap().isEmpty());
         assertFalse(analysis.getLeaderboard().isEmpty());
+
+        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(0,300,400,100,200));
+        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(2,3000,400,100,200));
+        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(2,300,9000,100,200));
+        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(2,300,400,2000,200));
+        assertThrows(IllegalArgumentException.class, () -> analysis.performGCAnalysis(2,300,400,100,2000));
     }
 
     @Test
