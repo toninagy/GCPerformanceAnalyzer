@@ -33,6 +33,7 @@ public class Analysis {
     private static final Pattern gcPhasesPattern = Pattern.compile("\\[gc,phases");
     private static final Pattern gcStatsPattern = Pattern.compile("\\[gc,stats");
     private static final Pattern gcPausePattern = Pattern.compile("\\[gc *].*Pause");
+    private static final Pattern gcConcurrentPattern = Pattern.compile("\\[gc *].*Concurrent Cycle \\d+");
     private static final Pattern gcWhiteSpacePattern = Pattern.compile("gc\\s");
     private static final Pattern gcNumPattern = Pattern.compile("GC\\([0-9]+\\)");
     private static final Pattern gcNumAndPausePattern = Pattern.compile("GC\\([0-9]+\\)\sPause");
@@ -564,7 +565,7 @@ public class Analysis {
                                         double totalTime, int runNo) {
         double time = yieldGCTimeFromSource(parsedStrings, gcType);
         measuredGCTimes.add(time);
-        if(gcType == GCType.SERIAL || gcType == GCType.PARALLEL || gcType == GCType.G1) {
+        if(gcType == GCType.SERIAL || gcType == GCType.PARALLEL) {
             measuredSTWTimes.add(time);
         }
         else {
@@ -579,6 +580,7 @@ public class Analysis {
     public static Double yieldSTWTimeFromSource(List<String> parsedStrings, GCType gcType) {
         double totalTimeRounded = 0.0;
         switch (gcType) {
+            case G1 -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcPausePattern, null, "ms", true);
             case ZGC -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcPhasesPattern,
                     pausePattern, "ms", true);
             case SHENANDOAH -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcWhiteSpacePattern,
@@ -592,8 +594,8 @@ public class Analysis {
         switch (gcType) {
             case SERIAL, PARALLEL -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcCpuPattern,
                     null, "Real=", false);
-            case G1 -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcPausePattern,
-                    null, "ms", true);
+            case G1 -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcPausePattern, null, "ms", true)
+                    + calculateTotalTimeRounded(parsedStrings, gcConcurrentPattern, null, "ms", true);
             case ZGC -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcPhasesPattern,
                     null, "ms", true);
             case SHENANDOAH -> totalTimeRounded = calculateTotalTimeRounded(parsedStrings, gcWhiteSpacePattern,

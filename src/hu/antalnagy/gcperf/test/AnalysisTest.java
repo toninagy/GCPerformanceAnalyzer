@@ -176,8 +176,10 @@ public class AnalysisTest {
         timeParallel = Analysis.yieldGCTimeFromSource(testStrings, GCType.PARALLEL);
         assertNotEquals(0.84, timeParallel, EPSILON);
 
+        testStrings.add("[2.490s][info][gc          ] GC(32) Concurrent Cycle 213.064ms");
+
         double timeG1 = Analysis.yieldGCTimeFromSource(testStrings, GCType.G1);
-        assertEquals(0.65, timeG1, EPSILON);
+        assertEquals(0.86, timeG1, EPSILON);
 
         double timeZGC = Analysis.yieldGCTimeFromSource(testStrings, GCType.ZGC);
         assertEquals(0.04, timeZGC, EPSILON);
@@ -194,7 +196,7 @@ public class AnalysisTest {
         assertNotEquals(0.04, timeZGC, EPSILON);
 
         double timeShenandoah = Analysis.yieldGCTimeFromSource(testStrings, GCType.SHENANDOAH);
-        assertEquals(0.68, timeShenandoah, EPSILON);
+        assertEquals(0.89, timeShenandoah, EPSILON);
     }
 
     @Test
