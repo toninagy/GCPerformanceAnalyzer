@@ -195,8 +195,7 @@ public class Analysis {
                 int xms = xm[0];
                 int xmx = xm[1];
                 noOfRuns = checkLimits(noOfRuns, i, xms, xmx);
-                ProcessBuilder builder = new ProcessBuilder(buildExecutableCommandArray(buildCLI(gcType, xms,
-                        xmx)));
+                ProcessBuilder builder = new ProcessBuilder(buildExecutableCommandArray(buildCLI(gcType, xms, xmx)));
                 builder.directory(LOC_OUT_BIN_PATH.toFile());
                 File outFile = createOutFile(false);
                 File outErrFile = createOutFile(true);
@@ -210,8 +209,7 @@ public class Analysis {
                     lastRunWithNoMallocFailure = i;
                 }
                 final AtomicBoolean erroneousRun = new AtomicBoolean(false);
-                noOfRuns = getNumOfRunsAndHandleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, process,
-                        outErrFile);
+                noOfRuns = getNumOfRunsAndHandleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, process, outErrFile);
                 if(!erroneousRun.get()) {
                     List<String> parsedStrings = yieldOutputStringsFromFile(outFile);
                     totalGCTime = yieldGCRuntimes(parsedStrings, gcType, measuredGCTimes, measuredSTWTimes, totalGCTime, i);

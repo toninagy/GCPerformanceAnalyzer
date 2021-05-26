@@ -32,6 +32,7 @@ public class GCPerfDriver {
     private String mainClass;
     private Analysis analysis;
     private List<String> resultMetrics;
+    private GCPerfPlot gcPerfPlot;
 
     public Analysis.Progress getProgress() {
         return analysis.getProgress();
@@ -43,6 +44,18 @@ public class GCPerfDriver {
 
     public List<GCType> getLeaderboard() {
         return new LinkedList<>(analysis.getLeaderboard());
+    }
+
+    public DBDriver getDbDriver() {
+        return dbDriver;
+    }
+
+    public Analysis getAnalysis() {
+        return analysis;
+    }
+
+    public GCPerfPlot getGcPerfPlot() {
+        return gcPerfPlot;
     }
 
     /***
@@ -64,12 +77,8 @@ public class GCPerfDriver {
             FileHandler fileHandler = new FileHandler(LOC_LOG_PATH.toString());
             SimpleFormatter formatter = new SimpleFormatter();
             fileHandler.setFormatter(formatter);
-            Analysis.getLOGGER().addHandler(fileHandler);
-            Leaderboard.getLOGGER().addHandler(fileHandler);
-            DBDriver.getLOGGER().addHandler(fileHandler);
-            LOGGER.addHandler(fileHandler);
-            analysis.performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize,
-                    startHeapIncrementSize, maxHeapIncrementSize);
+            addHandlersToLoggers(fileHandler);
+            analysis.performGCAnalysis(numOfRuns, initStartHeapSize, initMaxHeapSize, startHeapIncrementSize, maxHeapIncrementSize);
         } catch (IOException ex) {
             LOGGER.log(Level.SEVERE, "IOException occurred");
             throw new IOException(ex.getMessage());
@@ -113,6 +122,13 @@ public class GCPerfDriver {
             Date date = new Date(System.currentTimeMillis());
             createCSVFile(gcTypes, runtimesMap, throughputsMap, pausesMap, "results-" + formatter.format(date) + ".csv");
         }
+    }
+
+    private void addHandlersToLoggers(FileHandler fileHandler) {
+        Analysis.getLOGGER().addHandler(fileHandler);
+        Leaderboard.getLOGGER().addHandler(fileHandler);
+        DBDriver.getLOGGER().addHandler(fileHandler);
+        LOGGER.addHandler(fileHandler);
     }
 
     private static void createBinDirectoryAndCopyFile(File file) throws IOException {
@@ -238,19 +254,18 @@ public class GCPerfDriver {
 
     private void plotResults(List<GCType> gcTypes, Map<GCType, List<Double>> runtimesMap, Map<GCType, Double> avgRuntimesMap,
                              Map<GCType, List<Double>> throughputsMap) throws IOException, PythonExecutionException {
-        GCPerfPlot gcPerfPlot = constructGcPerfPlot(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap);
+        constructGcPerfPlot(gcTypes, runtimesMap, avgRuntimesMap, throughputsMap);
         gcPerfPlot.plotRuntimes();
         gcPerfPlot.plotThroughputs();
         gcPerfPlot.plotAvgRuntimes();
     }
 
-    private GCPerfPlot constructGcPerfPlot(List<GCType> gcTypes, Map<GCType, List<Double>> runtimesMap, Map<GCType, Double> avgRuntimesMap,
+    private void constructGcPerfPlot(List<GCType> gcTypes, Map<GCType, List<Double>> runtimesMap, Map<GCType, Double> avgRuntimesMap,
                                            Map<GCType, List<Double>> throughputsMap) {
-        GCPerfPlot gcPerfPlot = GCPerfPlot.getInstance();
+        gcPerfPlot = GCPerfPlot.getInstance();
         gcPerfPlot.setGcTypes(gcTypes);
         gcPerfPlot.setRuntimesMap(runtimesMap);
         gcPerfPlot.setAvgRuntimesMap(avgRuntimesMap);
         gcPerfPlot.setThroughputsMap(throughputsMap);
-        return gcPerfPlot;
     }
 }
