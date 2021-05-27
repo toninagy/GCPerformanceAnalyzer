@@ -31,10 +31,25 @@ public class DBDriver implements AutoCloseable {
 
     public DBDriver() {
         try {
-            connection = DriverManager.getConnection(DB_URL,"root","root");
+            connection = DriverManager.getConnection("jdbc:mysql://localhost/","root","root");
             statement = connection.createStatement();
+            statement.addBatch("CREATE DATABASE IF NOT EXISTS statistics;");
+            statement.addBatch("USE statistics;");
+            statement.addBatch(
+                    """
+                            CREATE TABLE IF NOT EXISTS stats (
+                                stat_id INT AUTO_INCREMENT PRIMARY KEY,
+                                file_name VARCHAR(255),
+                                ranking_serial TINYINT,
+                                ranking_parallel TINYINT,
+                                ranking_g1 TINYINT,
+                                ranking_zgc TINYINT,
+                                ranking_shenandoah TINYINT,
+                                date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            );""");
+            statement.executeBatch();
         } catch (SQLException ex) {
-            LOGGER.log(Level.SEVERE, "Connection establishment or statement creation attempt failed");
+            LOGGER.log(Level.SEVERE, "Connection establishment or database creation attempt failed");
             ex.printStackTrace();
         }
     }
