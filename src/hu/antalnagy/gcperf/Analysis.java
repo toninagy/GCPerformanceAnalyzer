@@ -183,7 +183,7 @@ public class Analysis {
             LOGGER.log(Level.INFO, "Initializing run with GC Type: " + gcType.name());
             LOGGER.log(Level.INFO, "Expected no. of runs: " + runs);
             for (int i = 0; i < noOfRuns; i++) {
-                if(Math.abs(i - lastRunWithNoMallocFailure) > 20) {
+                if(Math.abs(i - lastRunWithNoMallocFailure) == 20) {
                     LOGGER.log(Level.SEVERE, "Analysis suspended for GC Type: " + gcType.name() +
                             "\nReason: 20 consecutive failed runs\n" +
                             "Possible problems include too small general heap size or too small heap size increments");
@@ -205,11 +205,11 @@ public class Analysis {
                 final AtomicBoolean processSuspended = new AtomicBoolean();
                 createProcessThread(process, processSuspended, builder, gcType, avgRuns, outFile);
                 waitForMainLock();
+                final AtomicBoolean erroneousRun = new AtomicBoolean(false);
+                noOfRuns = getNumOfRunsAndHandleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, process, outErrFile);
                 if (!memoryAllocationFailureOnLastRun.get()) {
                     lastRunWithNoMallocFailure = i;
                 }
-                final AtomicBoolean erroneousRun = new AtomicBoolean(false);
-                noOfRuns = getNumOfRunsAndHandleUnexpectedThreadEvents(noOfRuns, processSuspended, erroneousRun, process, outErrFile);
                 if(!erroneousRun.get()) {
                     List<String> parsedStrings = yieldOutputStringsFromFile(outFile);
                     totalGCTime = yieldGCRuntimes(parsedStrings, gcType, measuredGCTimes, measuredSTWTimes, totalGCTime, i);
@@ -544,6 +544,7 @@ public class Analysis {
                     String line = scanner.nextLine();
                     if (line.contains("OutOfMemoryError")) {
                         outOfMemoryError = true;
+                        memoryAllocationFailureOnLastRun.set(true);
                     }
                 }
             }
@@ -555,6 +556,9 @@ public class Analysis {
                         "Please verify the integrity of the .class file or check the error output for more details");
             }
             noOfRuns++;
+        }
+        else {
+            memoryAllocationFailureOnLastRun.set(false);
         }
         return noOfRuns;
     }
